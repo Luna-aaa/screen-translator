@@ -51,6 +51,21 @@ public sealed class AppConfig
 
     public int RequestTimeoutSeconds { get; set; } = 30;
 
+    /// <summary>
+    /// Show the translation as it is written instead of after it finishes. Off is a real
+    /// fallback, not just a preference: a few compatible services mishandle stream:true.
+    /// </summary>
+    public bool StreamTranslation { get; set; } = true;
+
+    /// <summary>
+    /// Remember recent translations in history.json. Off also means nothing new is
+    /// written; clearing what is already there is a separate, explicit action.
+    /// </summary>
+    public bool KeepHistory { get; set; } = true;
+
+    /// <summary>Colour scheme id for the result popup; see <c>PopupThemes</c>.</summary>
+    public string PopupTheme { get; set; } = "dark";
+
     public AppConfig Clone()
     {
         return new AppConfig
@@ -66,6 +81,9 @@ public sealed class AppConfig
             OpenAi = OpenAi.Clone(),
             TargetLanguage = TargetLanguage,
             RequestTimeoutSeconds = RequestTimeoutSeconds,
+            StreamTranslation = StreamTranslation,
+            KeepHistory = KeepHistory,
+            PopupTheme = PopupTheme,
         };
     }
 }

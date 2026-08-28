@@ -99,6 +99,7 @@ public static class ConfigStore
         if (string.IsNullOrWhiteSpace(cfg.TargetLanguage)) cfg.TargetLanguage = "zh-Hans";
         if (string.IsNullOrWhiteSpace(cfg.ActiveTranslator)) cfg.ActiveTranslator = OpenAiSettings.TranslatorId;
         if (string.IsNullOrWhiteSpace(cfg.OcrSourceLanguage)) cfg.OcrSourceLanguage = "auto";
+        if (string.IsNullOrWhiteSpace(cfg.PopupTheme)) cfg.PopupTheme = "dark";
 
         cfg.RequestTimeoutSeconds = Math.Clamp(cfg.RequestTimeoutSeconds, 5, 300);
         cfg.CaptureDirectory = (cfg.CaptureDirectory ?? "").Trim();

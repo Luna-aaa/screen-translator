@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Threading;
 using ScreenTranslator.Capture;
 using ScreenTranslator.Config;
+using ScreenTranslator.History;
 using ScreenTranslator.Hotkey;
 using ScreenTranslator.Infrastructure;
 using ScreenTranslator.Ocr;
@@ -29,7 +30,14 @@ public partial class App : Application
     private SettingsWindow? _settings;
     private CaptureService? _capture;
     private ResultWindow? _result;
+    private HistoryWindow? _history;
     private readonly IOcrProvider _ocr = new WindowsOcrProvider();
+
+    /// <summary>
+    /// Popups the user asked to keep. They outlive the capture that created them, which is
+    /// the whole point, so they are tracked separately from the current one.
+    /// </summary>
+    private readonly List<ResultWindow> _pinnedWindows = new();
 
     private string? _hotkeyProblem;
 
@@ -83,6 +91,9 @@ public partial class App : Application
         _tray.CaptureRequested += () => StartCapture(fromTray: true);
         _tray.SettingsRequested += ShowSettings;
         _tray.AutoStartToggled += OnAutoStartToggled;
+        _tray.HistoryProvider = () => HistoryStore.All();
+        _tray.HistoryEntryChosen += OnHistoryEntryChosen;
+        _tray.HistoryWindowRequested += ShowHistory;
         _tray.ExitRequested += () => Shutdown(0);
         _tray.SetAutoStartChecked(Config.AutoStart);
         _tray.Show();
@@ -92,6 +103,12 @@ public partial class App : Application
         RegisterStartupHotkey();
 
         LogOcrAvailability();
+
+        // Recorded for the same reason as the OCR line above: "my history is gone" is
+        // otherwise indistinguishable from "the switch is off" and from "the file failed
+        // to parse", and this one line separates all three.
+        Log.Info($"翻译历史：{HistoryStore.Count} 条，记录开关 {(Config.KeepHistory ? "开" : "关")}");
+
         Log.Info("启动完成");
     }
 
@@ -202,17 +219,32 @@ public partial class App : Application
                 await Task.Delay(150);
             }
 
-            using var outcome = await _capture.CaptureAsync(
-                Config.SaveCaptures, Paths.ResolveCaptureDir(Config.CaptureDirectory));
-            switch (outcome.Status)
+            // Pinned popups are topmost, so leaving them up would photograph them into the
+            // frozen desktop and float them above the dimming mask.
+            CaptureOutcome outcome;
+            SetPinnedVisible(false);
+            try
             {
-                case CaptureStatus.Success:
-                    OnCaptureSucceeded(outcome);
-                    break;
-                case CaptureStatus.Failed:
-                    _tray?.Notify("截图失败", outcome.Error ?? "未知错误，详情见日志。", ToolTipIcon.Error, 8000);
-                    break;
-                // Cancelled and Busy are deliberately silent - the user knows what they did.
+                outcome = await _capture.CaptureAsync(
+                    Config.SaveCaptures, Paths.ResolveCaptureDir(Config.CaptureDirectory));
+            }
+            finally
+            {
+                SetPinnedVisible(true);
+            }
+
+            using (outcome)
+            {
+                switch (outcome.Status)
+                {
+                    case CaptureStatus.Success:
+                        OnCaptureSucceeded(outcome);
+                        break;
+                    case CaptureStatus.Failed:
+                        _tray?.Notify("截图失败", outcome.Error ?? "未知错误，详情见日志。", ToolTipIcon.Error, 8000);
+                        break;
+                    // Cancelled and Busy are deliberately silent - the user knows what they did.
+                }
             }
         }
         catch (Exception ex)
@@ -233,11 +265,13 @@ public partial class App : Application
 
         CloseResultWindow();
 
-        var window = new ResultWindow(image, outcome.ScreenRect);
+        var window = new ResultWindow(image, outcome.ScreenRect, PopupThemes.Find(Config.PopupTheme));
         window.RetryHandler = () => RunRecognitionAsync(window);
+        window.ObstaclesProvider = () => PinnedRectsExcept(window);
         window.Closed += (_, _) =>
         {
             if (ReferenceEquals(_result, window)) _result = null;
+            _pinnedWindows.Remove(window);
         };
 
         _result = window;
@@ -247,12 +281,43 @@ public partial class App : Application
         _ = RunRecognitionAsync(window);
     }
 
-    /// <summary>Only one popup exists at a time; a new capture supersedes the old one.</summary>
+    /// <summary>
+    /// A new capture supersedes the current popup — unless the user pinned it, which is
+    /// exactly the request to keep it around while they go look up the next thing.
+    /// </summary>
     private void CloseResultWindow()
     {
         var window = _result;
         _result = null;
-        window?.Close();
+        if (window is null) return;
+
+        if (window.IsPinned)
+        {
+            if (!_pinnedWindows.Contains(window)) _pinnedWindows.Add(window);
+            Log.Info($"小窗已钉住，保留（当前 {_pinnedWindows.Count} 个）");
+            return;
+        }
+
+        window.Close();
+    }
+
+    /// <summary>
+    /// Where the pinned popups currently sit, so a new one can avoid covering them.
+    /// Excludes the asking window, which is allowed to sit exactly where it already is.
+    /// </summary>
+    private IReadOnlyList<System.Drawing.Rectangle> PinnedRectsExcept(ResultWindow asking) =>
+        _pinnedWindows.Where(w => !ReferenceEquals(w, asking))
+                      .Select(w => w.ScreenRect)
+                      .ToList();
+
+    /// <summary>Iterates a copy: a popup can close itself while this runs.</summary>
+    private void SetPinnedVisible(bool visible)
+    {
+        foreach (var window in _pinnedWindows.ToList())
+        {
+            if (visible) window.ShowAfterCapture();
+            else window.HideForCapture();
+        }
     }
 
     /// <summary>
@@ -293,6 +358,10 @@ public partial class App : Application
     {
         window.SetTranslating(ocr);
 
+        // Re-translating reuses the recognized text, so a bad translation costs one request
+        // instead of a whole re-read of the image.
+        window.RetranslateHandler = () => RunTranslationAsync(window, ocr);
+
         var translator = CreateTranslator();
         if (!translator.IsConfigured)
         {
@@ -303,10 +372,67 @@ public partial class App : Application
         var request = new TranslationRequest(
             ocr.Text, ocr.LanguageTag, Config.TargetLanguage, Config.OpenAi.ExtraPrompt);
 
-        var result = await translator.TranslateAsync(request, window.Lifetime);
+        // Progress captures this (UI) thread's synchronization context, so the translator
+        // can report from wherever it likes and the popup still updates safely.
+        IProgress<string>? progress = Config.StreamTranslation
+            ? new Progress<string>(window.ShowPartialTranslation)
+            : null;
+
+        var result = await translator.TranslateAsync(request, progress, window.Lifetime);
 
         if (window.Lifetime.IsCancellationRequested) return;
         window.SetTranslationResult(result);
+
+        RememberTranslation(ocr, result);
+    }
+
+    private static void RememberTranslation(OcrOutcome ocr, TranslationOutcome result)
+    {
+        if (!Config.KeepHistory) return;
+        if (!result.IsSuccess || string.IsNullOrWhiteSpace(result.Text)) return;
+
+        HistoryStore.Add(new TranslationRecord
+        {
+            SourceLanguage = OcrLanguages.DisplayFor(ocr.LanguageTag),
+            Original = ocr.Text,
+            Translation = result.Text,
+        });
+    }
+
+    // ----------------------------------------------------------------- history
+
+    /// <summary>
+    /// Picking an entry from the tray copies it. Re-showing it beside the original screen
+    /// region would be wrong - by now there is something else there.
+    /// </summary>
+    private void OnHistoryEntryChosen(TranslationRecord record)
+    {
+        var text = string.IsNullOrWhiteSpace(record.Translation) ? record.Original : record.Translation;
+        try
+        {
+            System.Windows.Clipboard.SetText(text);
+            _tray?.Notify("已复制", record.Summary(60));
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"从托盘复制历史失败：{ex.Message}");
+            _tray?.Notify("复制失败", "剪贴板被别的程序占着，过一秒再试。", ToolTipIcon.Warning);
+        }
+    }
+
+    private void ShowHistory()
+    {
+        if (_history is not null)
+        {
+            if (_history.WindowState == WindowState.Minimized) _history.WindowState = WindowState.Normal;
+            _history.Activate();
+            return;
+        }
+
+        _history = new HistoryWindow();
+        _history.Closed += (_, _) => _history = null;
+        _history.Show();
+        _history.Activate();
     }
 
     /// <summary>

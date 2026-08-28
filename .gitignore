@@ -12,8 +12,11 @@ dist/
 *.suo
 *.userprefs
 
-# never commit these, wherever they might land
+# never commit these, wherever they might land.
+# config.json holds the encrypted key; history.json holds whatever was on screen.
+# Both actually live in %APPDATA%, so this is a second line of defence, not the first.
 config.json
+history.json
 selftest.txt
 testkey.txt
 *.log

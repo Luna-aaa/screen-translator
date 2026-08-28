@@ -63,12 +63,22 @@ internal static class TranslatorSelfTest
         }
         Line("");
 
-        var outcome = await translator.TestAsync().ConfigureAwait(false);
+        // Goes through TranslateAsync rather than TestAsync so the check exercises the
+        // real path end to end - prompt building included - and can report whether the
+        // reply actually arrived in pieces.
+        var chunks = 0;
+        var progress = new Progress<string>(_ => Interlocked.Increment(ref chunks));
+        var probe = new TranslationRequest("hello", "en-US", config.TargetLanguage, config.OpenAi.ExtraPrompt);
+
+        var outcome = await translator.TranslateAsync(probe, progress).ConfigureAwait(false);
 
         Line($"状态：{outcome.Status}");
         if (outcome.IsSuccess)
         {
             Line($"用时：{outcome.ElapsedMs} ms");
+            // 1 means the service answered in one piece; more means it really streamed.
+            Line($"流式分段：{chunks}");
+            if (outcome.Truncated) Line("注意：译文被截断了");
             Line($"返回：{outcome.Text}");
             Line("");
             Line("结果：通过");

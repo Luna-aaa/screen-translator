@@ -1,4 +1,5 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
+using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -71,13 +72,15 @@ public sealed class OpenAiCompatibleTranslator : ITranslator, IModelCatalog
     // ------------------------------------------------------------------ public
 
     public Task<TranslationOutcome> TranslateAsync(
-        TranslationRequest request, CancellationToken cancellationToken = default)
+        TranslationRequest request,
+        IProgress<string>? onPartial = null,
+        CancellationToken cancellationToken = default)
     {
         if (!IsConfigured) return Task.FromResult(TranslationOutcome.NotConfigured());
         if (string.IsNullOrWhiteSpace(request.Text))
             return Task.FromResult(TranslationOutcome.Success("", 0));
 
-        return SendAsync(BuildSystemPrompt(request), request.Text, cancellationToken);
+        return SendAsync(BuildSystemPrompt(request), request.Text, onPartial, cancellationToken);
     }
 
     public Task<TranslationOutcome> TestAsync(CancellationToken cancellationToken = default)
@@ -85,8 +88,18 @@ public sealed class OpenAiCompatibleTranslator : ITranslator, IModelCatalog
         if (!IsConfigured) return Task.FromResult(TranslationOutcome.NotConfigured());
 
         // A real but minimal translation: exercises address, key, and model in one go.
+        // Deliberately asks for a streamed reply even though it throws the pieces away, so
+        // that "测试连接" fails on a service that rejects stream:true instead of passing
+        // here and then breaking on the first real capture.
         return SendAsync("You are a translator. Reply with the Simplified Chinese translation only.",
-            "hello", cancellationToken);
+            "hello", NullProgress.Instance, cancellationToken);
+    }
+
+    /// <summary>Asks for a stream without keeping the pieces.</summary>
+    private sealed class NullProgress : IProgress<string>
+    {
+        public static readonly NullProgress Instance = new();
+        public void Report(string value) { }
     }
 
     // ------------------------------------------------------------------ prompt
@@ -124,7 +137,7 @@ public sealed class OpenAiCompatibleTranslator : ITranslator, IModelCatalog
     // ------------------------------------------------------------------- http
 
     private async Task<TranslationOutcome> SendAsync(
-        string systemPrompt, string userText, CancellationToken cancellationToken)
+        string systemPrompt, string userText, IProgress<string>? onPartial, CancellationToken cancellationToken)
     {
         var sw = Stopwatch.StartNew();
 
@@ -139,6 +152,13 @@ public sealed class OpenAiCompatibleTranslator : ITranslator, IModelCatalog
                 $"接口地址不是有效的网址：{_settings.BaseUrl}\n应该以 http:// 或 https:// 开头。");
         }
 
+        var streaming = onPartial is not null;
+
+        // Lives outside the try so every failure path can still hand back whatever already
+        // arrived. Half a translation the user has been watching appear is worth more than
+        // an error message that wipes it off the screen.
+        var received = new StringBuilder();
+
         try
         {
             var payload = new
@@ -150,7 +170,7 @@ public sealed class OpenAiCompatibleTranslator : ITranslator, IModelCatalog
                     new { role = "user", content = userText },
                 },
                 temperature = 0.2,
-                stream = false,
+                stream = streaming,
             };
 
             using var message = new HttpRequestMessage(HttpMethod.Post, uri);
@@ -158,13 +178,31 @@ public sealed class OpenAiCompatibleTranslator : ITranslator, IModelCatalog
             message.Content = new StringContent(
                 JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
 
+            // ResponseHeadersRead is what makes a stream actually stream: the default waits
+            // for the entire body before returning, which would defeat the whole point.
             using var response = await ClientFor(uri).SendAsync(
-                message, HttpCompletionOption.ResponseContentRead, timeout.Token).ConfigureAwait(false);
-
-            var body = await response.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false);
+                message,
+                streaming ? HttpCompletionOption.ResponseHeadersRead : HttpCompletionOption.ResponseContentRead,
+                timeout.Token).ConfigureAwait(false);
 
             if (!response.IsSuccessStatusCode)
-                return MapHttpError(response.StatusCode, body);
+            {
+                var errorBody = await response.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false);
+                return MapHttpError(response.StatusCode, errorBody);
+            }
+
+            // Asking for a stream is not the same as getting one: compatible services do
+            // accept stream:true and then reply with an ordinary JSON body. Trusting the
+            // request instead of the reply would leave those users at an empty popup, so
+            // the content type decides which reader runs.
+            var isEventStream = string.Equals(
+                response.Content.Headers.ContentType?.MediaType, "text/event-stream",
+                StringComparison.OrdinalIgnoreCase);
+
+            if (streaming && isEventStream)
+                return await ReadEventStreamAsync(response, timeout, onPartial!, received, sw).ConfigureAwait(false);
+
+            var body = await response.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false);
 
             var text = ExtractContent(body);
             if (text is null)
@@ -175,8 +213,15 @@ public sealed class OpenAiCompatibleTranslator : ITranslator, IModelCatalog
                     Truncate(body, 400));
             }
 
+            text = text.Trim();
+            if (streaming) Log.Info("服务没有按流式返回，已按整段处理");
+
+            // Reported even when it arrived in one piece, so the caller's display path is
+            // identical either way and never has to ask whether streaming happened.
+            onPartial?.Report(text);
+
             Log.Info($"翻译成功，{text.Length} 字，用时 {sw.ElapsedMilliseconds}ms");
-            return TranslationOutcome.Success(text.Trim(), sw.ElapsedMilliseconds);
+            return TranslationOutcome.Success(text, sw.ElapsedMilliseconds);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -184,12 +229,16 @@ public sealed class OpenAiCompatibleTranslator : ITranslator, IModelCatalog
         }
         catch (OperationCanceledException)
         {
+            if (Salvage(received, sw, "超时") is { } partial) return partial;
+
             Log.Warn($"翻译超时（{_timeoutSeconds} 秒）");
             return TranslationOutcome.Error(TranslationStatus.Timeout,
                 $"等了 {_timeoutSeconds} 秒还没回应。可以在设置里把超时调长，或者换个更快的模型。");
         }
-        catch (HttpRequestException ex)
+        catch (Exception ex) when (ex is HttpRequestException or IOException)
         {
+            if (Salvage(received, sw, "连接中断") is { } partial) return partial;
+
             Log.Error("翻译请求网络失败", ex);
             return TranslationOutcome.Error(TranslationStatus.NetworkError,
                 "连不上翻译服务。检查一下网络，以及设置里的「接口地址」有没有写错。",
@@ -197,8 +246,122 @@ public sealed class OpenAiCompatibleTranslator : ITranslator, IModelCatalog
         }
         catch (Exception ex)
         {
+            if (Salvage(received, sw, ex.GetType().Name) is { } partial) return partial;
+
             Log.Error("翻译请求失败", ex);
             return TranslationOutcome.Error(TranslationStatus.Failed, ex.Message, ex.ToString());
+        }
+    }
+
+    /// <summary>
+    /// Turns a mid-stream failure into a usable-but-flagged result. Returns null when
+    /// nothing had arrived yet, in which case the caller reports the failure normally.
+    /// </summary>
+    private static TranslationOutcome? Salvage(StringBuilder received, Stopwatch sw, string reason)
+    {
+        var text = received.ToString().Trim();
+        if (text.Length == 0) return null;
+
+        Log.Warn($"流式输出中断（{reason}），保留已收到的 {text.Length} 字");
+        return TranslationOutcome.Success(text, sw.ElapsedMilliseconds, truncated: true);
+    }
+
+    /// <summary>
+    /// Reads an OpenAI-style server-sent-event stream: a run of "data: {json}" lines
+    /// ending with "data: [DONE]", each carrying the next few characters of the answer.
+    /// </summary>
+    private async Task<TranslationOutcome> ReadEventStreamAsync(
+        HttpResponseMessage response, CancellationTokenSource timeout,
+        IProgress<string> onPartial, StringBuilder received, Stopwatch sw)
+    {
+        var truncated = false;
+        var sawDone = false;
+        var chunks = 0;
+
+        var stream = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
+        await using (stream.ConfigureAwait(false))
+        {
+            using var reader = new StreamReader(stream, Encoding.UTF8);
+
+            while (true)
+            {
+                var line = await reader.ReadLineAsync(timeout.Token).ConfigureAwait(false);
+                if (line is null) break;
+
+                // Every line restarts the clock. The timeout has to mean "the service went
+                // quiet", not "the answer is long" - a whole-request budget sized for a
+                // one-line caption would cut a paragraph off halfway through.
+                timeout.CancelAfter(TimeSpan.FromSeconds(_timeoutSeconds));
+
+                if (line.Length == 0) continue;
+                // Skips ": keep-alive" comments and any other field (event:, id:, retry:).
+                if (!line.StartsWith("data:", StringComparison.Ordinal)) continue;
+
+                var chunk = line[5..].Trim();
+                if (chunk.Length == 0) continue;
+                if (chunk == "[DONE]") { sawDone = true; break; }
+
+                var (delta, finishReason) = ReadStreamChunk(chunk);
+                if (string.Equals(finishReason, "length", StringComparison.OrdinalIgnoreCase)) truncated = true;
+                if (string.IsNullOrEmpty(delta)) continue;
+
+                received.Append(delta);
+                chunks++;
+                onPartial.Report(received.ToString());
+            }
+        }
+
+        var text = received.ToString().Trim();
+        if (text.Length == 0)
+        {
+            Log.Warn("流式响应里没有任何译文内容");
+            return TranslationOutcome.Error(TranslationStatus.Failed,
+                "服务接受了请求，但一个字也没返回。换个模型试试，或者把设置里的「边翻译边显示」关掉。");
+        }
+
+        // Not an error by itself - some services just close the connection instead of
+        // sending the terminator - but worth a log line when output looks cut off.
+        if (!sawDone) Log.Warn("流式响应没有收到结束标记就断开了");
+
+        Log.Info($"翻译成功（流式），{text.Length} 字 / {chunks} 段，用时 {sw.ElapsedMilliseconds}ms"
+                 + (truncated ? "，被模型的输出长度上限截断" : ""));
+        return TranslationOutcome.Success(text, sw.ElapsedMilliseconds, truncated);
+    }
+
+    /// <summary>Pulls the incremental text out of one streamed chunk. Never throws.</summary>
+    private static (string? Delta, string? FinishReason) ReadStreamChunk(string json)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return (null, null);
+
+            if (!root.TryGetProperty("choices", out var choices)
+                || choices.ValueKind != JsonValueKind.Array
+                || choices.GetArrayLength() == 0) return (null, null);
+
+            var first = choices[0];
+            if (first.ValueKind != JsonValueKind.Object) return (null, null);
+
+            var finishReason = first.TryGetProperty("finish_reason", out var finish)
+                               && finish.ValueKind == JsonValueKind.String
+                ? finish.GetString()
+                : null;
+
+            // "delta" carries the new characters. Reasoning models also emit
+            // "reasoning_content" here; that is the model thinking out loud rather than the
+            // translation, so it is deliberately ignored.
+            if (!first.TryGetProperty("delta", out var delta) || delta.ValueKind != JsonValueKind.Object)
+                return (null, finishReason);
+            if (!delta.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.String)
+                return (null, finishReason);
+
+            return (content.GetString(), finishReason);
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException)
+        {
+            return (null, null);
         }
     }
 

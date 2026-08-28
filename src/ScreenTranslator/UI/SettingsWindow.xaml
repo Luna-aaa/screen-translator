@@ -136,6 +136,18 @@
                         </StackPanel>
 
                         <StackPanel Style="{StaticResource Block}">
+                            <TextBlock Text="翻译历史" Style="{StaticResource SectionTitle}" />
+                            <CheckBox x:Name="KeepHistoryCheck" Content="记住最近的翻译" />
+                            <StackPanel Orientation="Horizontal">
+                                <Button Content="查看历史" Style="{StaticResource MinorButton}"
+                                        Click="OpenHistory_Click" />
+                                <Button Content="清空历史" Style="{StaticResource MinorButton}"
+                                        Margin="8,0,0,0" Click="ClearHistory_Click" />
+                            </StackPanel>
+                            <TextBlock x:Name="HistoryHintText" Style="{StaticResource Hint}" />
+                        </StackPanel>
+
+                        <StackPanel Style="{StaticResource Block}">
                             <TextBlock Text="文件位置" Style="{StaticResource SectionTitle}" />
                             <StackPanel Orientation="Horizontal">
                                 <Button Content="打开数据目录" Style="{StaticResource MinorButton}"
@@ -201,6 +213,19 @@
                         <StackPanel Style="{StaticResource Block}">
                             <TextBlock Text="超时（秒）" Style="{StaticResource SectionTitle}" />
                             <TextBox x:Name="TimeoutBox" Width="110" HorizontalAlignment="Left" />
+                        </StackPanel>
+
+                        <StackPanel Style="{StaticResource Block}">
+                            <TextBlock Text="译文小窗" Style="{StaticResource SectionTitle}" />
+                            <CheckBox x:Name="StreamCheck" Content="边翻译边显示" />
+                            <TextBlock Style="{StaticResource Hint}" Margin="0,0,0,10"
+                                       Text="打开后译文一个字一个字地冒出来，不用等整段翻完。极少数服务不支持这种方式，如果打开后小窗一直空着，把它关掉即可。" />
+                            <TextBlock Text="配色" FontSize="12" Margin="0,0,0,4"
+                                       Foreground="{StaticResource Ink}" />
+                            <ComboBox x:Name="PopupThemeCombo" Padding="7,6" Width="200"
+                                      HorizontalAlignment="Left" />
+                            <TextBlock Style="{StaticResource Hint}"
+                                       Text="下次框选时生效。小窗里的文字可以用鼠标拖选，选中后「复制译文」会变成「复制选中」。" />
                         </StackPanel>
 
                         <StackPanel Style="{StaticResource Block}">

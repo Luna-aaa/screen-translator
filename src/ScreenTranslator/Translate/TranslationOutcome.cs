@@ -43,13 +43,21 @@ public sealed class TranslationOutcome
 
     public long ElapsedMs { get; private init; }
 
+    /// <summary>
+    /// The text is usable but known to be incomplete — the model hit its output limit, or
+    /// a streamed response ended early. Saying so matters: a translation that stops
+    /// mid-sentence otherwise looks like the model's own (wrong) answer.
+    /// </summary>
+    public bool Truncated { get; private init; }
+
     public bool IsSuccess => Status == TranslationStatus.Success;
 
-    public static TranslationOutcome Success(string text, long elapsedMs) => new()
+    public static TranslationOutcome Success(string text, long elapsedMs, bool truncated = false) => new()
     {
         Status = TranslationStatus.Success,
         Text = text,
         ElapsedMs = elapsedMs,
+        Truncated = truncated,
     };
 
     public static TranslationOutcome Error(TranslationStatus status, string message, string? detail = null) => new()

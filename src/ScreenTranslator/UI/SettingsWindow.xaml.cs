@@ -6,6 +6,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using ScreenTranslator.Config;
+using ScreenTranslator.History;
 using ScreenTranslator.Hotkey;
 using ScreenTranslator.Infrastructure;
 using ScreenTranslator.Ocr;
@@ -75,6 +76,8 @@ public partial class SettingsWindow : Window
             HotkeyBox.Text = _pendingHotkey.ToString();
             AutoStartCheck.IsChecked = _working.AutoStart;
             SaveCapturesCheck.IsChecked = _working.SaveCaptures;
+            KeepHistoryCheck.IsChecked = _working.KeepHistory;
+            UpdateHistoryHint();
 
             CaptureDirBox.Text = _working.CaptureDirectory;
             UpdateCaptureDirHint();
@@ -88,6 +91,9 @@ public partial class SettingsWindow : Window
             ModelBox.Text = _working.OpenAi.Model;
             ExtraPromptBox.Text = _working.OpenAi.ExtraPrompt;
             TimeoutBox.Text = _working.RequestTimeoutSeconds.ToString();
+            StreamCheck.IsChecked = _working.StreamTranslation;
+            PopupThemeCombo.ItemsSource = PopupThemes.All;
+            PopupThemeCombo.SelectedItem = PopupThemes.Find(_working.PopupTheme);
             ApiKeyBox.Password = SecureStore.Unprotect(_working.OpenAi.ApiKeyProtected);
 
             SourceLanguageCombo.ItemsSource = SourceLanguages;
@@ -104,7 +110,7 @@ public partial class SettingsWindow : Window
             RefreshLanguagePacks();
 
             var version = Assembly.GetExecutingAssembly().GetName().Version;
-            VersionText.Text = $"版本 {version?.ToString(3) ?? "0.1.0"}　·　阶段 0（骨架）";
+            VersionText.Text = $"版本 {version?.ToString(3) ?? "0.1.0"}　·　阶段 4（打磨）";
             AboutPathsText.Text =
                 $"程序：{Paths.ExecutablePath}\n配置：{Paths.ConfigFile}\n日志：{Paths.LogDir}"
                 + $"\n截图：{Paths.ResolveCaptureDir(_working.CaptureDirectory)}";
@@ -565,6 +571,9 @@ public partial class SettingsWindow : Window
         config.SaveCaptures = SaveCapturesCheck.IsChecked == true;
         config.CaptureDirectory = captureDir;
         config.RequestTimeoutSeconds = timeout;
+        config.StreamTranslation = StreamCheck.IsChecked == true;
+        config.KeepHistory = KeepHistoryCheck.IsChecked == true;
+        config.PopupTheme = (PopupThemeCombo.SelectedItem as PopupTheme)?.Id ?? PopupThemes.Dark.Id;
 
         config.OpenAi.Preset = (PresetCombo.SelectedItem as ServicePreset)?.Id ?? ServicePresets.Custom.Id;
         config.OpenAi.BaseUrl = baseUrl;
@@ -596,11 +605,51 @@ public partial class SettingsWindow : Window
         to.SaveCaptures = from.SaveCaptures;
         to.CaptureDirectory = from.CaptureDirectory;
         to.RequestTimeoutSeconds = from.RequestTimeoutSeconds;
+        to.StreamTranslation = from.StreamTranslation;
+        to.KeepHistory = from.KeepHistory;
+        to.PopupTheme = from.PopupTheme;
         to.OcrSourceLanguage = from.OcrSourceLanguage;
         to.OcrCandidateLanguages = new List<string>(from.OcrCandidateLanguages);
         to.ActiveTranslator = from.ActiveTranslator;
         to.TargetLanguage = from.TargetLanguage;
         to.OpenAi = from.OpenAi.Clone();
+    }
+
+    // ----------------------------------------------------------------- history
+
+    private void UpdateHistoryHint()
+    {
+        var count = HistoryStore.Count;
+        HistoryHintText.Text = count == 0
+            ? $"还没有记录。记录存在 {Paths.DataDir}\\history.json，最多保留 {HistoryStore.MaxEntries} 条。"
+            : $"现在有 {count} 条，最多保留 {HistoryStore.MaxEntries} 条，存在 {Paths.DataDir}\\history.json。"
+              + "取消勾选只是不再新增，已有的要点「清空历史」。";
+    }
+
+    private void OpenHistory_Click(object sender, RoutedEventArgs e)
+    {
+        new HistoryWindow { Owner = this }.ShowDialog();
+        UpdateHistoryHint();
+    }
+
+    private void ClearHistory_Click(object sender, RoutedEventArgs e)
+    {
+        if (HistoryStore.Count == 0)
+        {
+            SetStatus("本来就没有记录。");
+            return;
+        }
+
+        // Irreversible, so it asks - unlike everything else on this screen, which only
+        // takes effect on save and can simply be re-edited.
+        var answer = MessageBox.Show(this,
+            $"确定要删掉全部 {HistoryStore.Count} 条翻译记录吗？删了就找不回来了。",
+            "清空翻译历史", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
+        if (answer != MessageBoxResult.OK) return;
+
+        HistoryStore.Clear();
+        UpdateHistoryHint();
+        SetStatus("历史已清空。");
     }
 
     private void SetStatus(string message, bool isError = false)

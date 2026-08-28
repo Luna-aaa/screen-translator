@@ -1,6 +1,7 @@
 using System.Drawing;
 using System.Reflection;
 using System.Windows.Forms;
+using ScreenTranslator.History;
 using ScreenTranslator.Infrastructure;
 
 namespace ScreenTranslator.Tray;
@@ -13,9 +14,12 @@ public sealed class TrayIconHost : IDisposable
 {
     private const string IconResourceName = "ScreenTranslator.Resources.app.ico";
 
+    private const int MenuHistoryCount = 8;
+
     private readonly NotifyIcon _notifyIcon;
     private readonly ToolStripMenuItem _captureItem;
     private readonly ToolStripMenuItem _autoStartItem;
+    private readonly ToolStripMenuItem _historyItem;
     private Icon? _ownedIcon;
     private bool _suppressAutoStartEvent;
 
@@ -23,6 +27,12 @@ public sealed class TrayIconHost : IDisposable
     public event Action? SettingsRequested;
     public event Action<bool>? AutoStartToggled;
     public event Action? ExitRequested;
+
+    /// <summary>Asked for the current list every time the submenu opens.</summary>
+    public Func<IReadOnlyList<TranslationRecord>>? HistoryProvider { get; set; }
+
+    public event Action<TranslationRecord>? HistoryEntryChosen;
+    public event Action? HistoryWindowRequested;
 
     public TrayIconHost()
     {
@@ -42,8 +52,16 @@ public sealed class TrayIconHost : IDisposable
         // image/check margin, so with both margins off a checked item looks identical
         // to an unchecked one. We keep ShowImageMargin off (no menu item has an icon)
         // and turn on the narrower check-only margin instead.
+        // Rebuilt each time it opens rather than kept in sync: the list changes on every
+        // translation, and a menu nobody is looking at is not worth maintaining.
+        _historyItem = new ToolStripMenuItem("最近的翻译");
+        _historyItem.DropDownOpening += (_, _) => RebuildHistoryMenu();
+        _historyItem.DropDownItems.Add(new ToolStripMenuItem("…") { Enabled = false });
+
         var menu = new ContextMenuStrip { ShowImageMargin = false, ShowCheckMargin = true };
         menu.Items.Add(_captureItem);
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(_historyItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(new ToolStripMenuItem("设置…", null, (_, _) => SettingsRequested?.Invoke()));
         menu.Items.Add(_autoStartItem);
@@ -67,6 +85,51 @@ public sealed class TrayIconHost : IDisposable
     }
 
     public void Show() => _notifyIcon.Visible = true;
+
+    private void RebuildHistoryMenu()
+    {
+        var items = _historyItem.DropDownItems;
+
+        // Copy out, detach, THEN dispose. ToolStripItem.Dispose() removes the item from its
+        // owner's collection, so disposing while enumerating that same collection throws
+        // "Collection was modified" - which surfaced as a .NET error dialog the moment the
+        // submenu was opened with any history in it.
+        var previous = new ToolStripItem[items.Count];
+        items.CopyTo(previous, 0);
+        items.Clear();
+        foreach (var old in previous) old.Dispose();
+
+        var records = HistoryProvider?.Invoke() ?? Array.Empty<TranslationRecord>();
+
+        if (records.Count == 0)
+        {
+            items.Add(new ToolStripMenuItem("（还没有记录）") { Enabled = false });
+            return;
+        }
+
+        foreach (var record in records.Take(MenuHistoryCount))
+        {
+            var captured = record;
+            items.Add(new ToolStripMenuItem(captured.Summary(), null, (_, _) => HistoryEntryChosen?.Invoke(captured))
+            {
+                // The menu item can only show one short line; the tooltip is where the
+                // whole thing is actually readable.
+                ToolTipText = Tooltip(captured),
+            });
+        }
+
+        items.Add(new ToolStripSeparator());
+        items.Add(new ToolStripMenuItem("全部记录…", null, (_, _) => HistoryWindowRequested?.Invoke()));
+    }
+
+    private static string Tooltip(TranslationRecord record)
+    {
+        // The shell truncates a tray tooltip well before this, but clipping it ourselves
+        // keeps the cut at a sensible place instead of mid-character.
+        static string Clip(string text) => text.Length <= 300 ? text : text[..300] + "…";
+
+        return $"{record.Time:MM-dd HH:mm}\n\n{Clip(record.Translation)}\n\n—— 原文 ——\n{Clip(record.Original)}";
+    }
 
     public void SetHotkeyHint(string? hotkeyText)
     {

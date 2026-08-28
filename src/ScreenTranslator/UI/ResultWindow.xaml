@@ -10,7 +10,7 @@
         SizeToContent="WidthAndHeight"
         WindowStartupLocation="Manual"
         Left="-20000" Top="-20000"
-        Background="#FF191B23"
+        Background="{DynamicResource WindowBg}"
         FontFamily="Microsoft YaHei UI, Segoe UI, Microsoft YaHei"
         UseLayoutRounding="True"
         TextOptions.TextFormattingMode="Display">
@@ -23,17 +23,30 @@
         (see ResultWindow.xaml.cs); on Windows 10 the corners are simply square.
     -->
 
+    <!--
+        Every colour below is a DynamicResource, and the values are replaced from
+        PopupThemes when the window is built. StaticResource would bake in whichever
+        scheme happened to be written here.
+    -->
     <Window.Resources>
+        <SolidColorBrush x:Key="WindowBg" Color="#FF191B23" />
+        <SolidColorBrush x:Key="Surface" Color="#FF12141B" />
         <SolidColorBrush x:Key="Ink" Color="#FFE9EBF2" />
         <SolidColorBrush x:Key="Muted" Color="#FF98A0B4" />
         <SolidColorBrush x:Key="Accent" Color="#FF7C9BFF" />
         <SolidColorBrush x:Key="Warn" Color="#FFFFC46B" />
         <SolidColorBrush x:Key="Line" Color="#FF2C303C" />
+        <SolidColorBrush x:Key="ButtonBg" Color="#FF262A36" />
+        <SolidColorBrush x:Key="ButtonBorder" Color="#FF383D4C" />
+        <SolidColorBrush x:Key="ButtonHover" Color="#FF333949" />
+        <SolidColorBrush x:Key="PrimaryBg" Color="#FF3D5AFE" />
+        <SolidColorBrush x:Key="PrimaryInk" Color="White" />
+        <SolidColorBrush x:Key="Selection" Color="#FF3D5AFE" />
 
         <Style x:Key="ChromeButton" TargetType="Button">
-            <Setter Property="Foreground" Value="{StaticResource Ink}" />
-            <Setter Property="Background" Value="#FF262A36" />
-            <Setter Property="BorderBrush" Value="#FF383D4C" />
+            <Setter Property="Foreground" Value="{DynamicResource Ink}" />
+            <Setter Property="Background" Value="{DynamicResource ButtonBg}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource ButtonBorder}" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="Padding" Value="11,5" />
             <Setter Property="FontSize" Value="12" />
@@ -50,7 +63,7 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#FF333949" />
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource ButtonHover}" />
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter Property="Opacity" Value="0.45" />
@@ -62,21 +75,49 @@
         </Style>
 
         <Style x:Key="PrimaryChromeButton" TargetType="Button" BasedOn="{StaticResource ChromeButton}">
-            <Setter Property="Background" Value="#FF3D5AFE" />
-            <Setter Property="BorderBrush" Value="#FF3D5AFE" />
-            <Setter Property="Foreground" Value="White" />
+            <Setter Property="Background" Value="{DynamicResource PrimaryBg}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource PrimaryBg}" />
+            <Setter Property="Foreground" Value="{DynamicResource PrimaryInk}" />
+        </Style>
+
+        <!--
+            Read-only TextBox rather than TextBlock, purely so the text can be selected with
+            the mouse - WPF's TextBlock cannot be. Stripped of every editor affordation:
+            no border, no background, no undo history (the streaming text replaces itself
+            dozens of times per translation), and no built-in context menu, whose Paste item
+            would be nonsense here and whose popup would read as "clicked outside" and close
+            the window. IsInactiveSelectionHighlightEnabled matters: this window is never
+            activated, so without it the highlight would be invisible.
+        -->
+        <Style x:Key="SelectableText" TargetType="TextBox">
+            <Setter Property="IsReadOnly" Value="True" />
+            <Setter Property="IsReadOnlyCaretVisible" Value="False" />
+            <Setter Property="IsUndoEnabled" Value="False" />
+            <Setter Property="IsTabStop" Value="False" />
+            <Setter Property="AcceptsReturn" Value="True" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="ContextMenu" Value="{x:Null}" />
+            <Setter Property="Cursor" Value="IBeam" />
+            <Setter Property="SelectionBrush" Value="{DynamicResource Selection}" />
+            <Setter Property="SelectionOpacity" Value="0.45" />
+            <Setter Property="IsInactiveSelectionHighlightEnabled" Value="True" />
+            <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled" />
+            <Setter Property="ScrollViewer.VerticalScrollBarVisibility" Value="Disabled" />
         </Style>
     </Window.Resources>
 
-    <Border x:Name="RootBorder" BorderBrush="{StaticResource Line}" BorderThickness="1" Padding="0"
-            Background="Transparent" Cursor="SizeAll"
+    <Border x:Name="RootBorder" BorderBrush="{DynamicResource Line}" BorderThickness="1" Padding="0"
+            Background="Transparent" Cursor="Arrow"
             MouseLeftButtonDown="Root_MouseLeftButtonDown"
             MouseMove="Root_MouseMove"
             MouseLeftButtonUp="Root_MouseLeftButtonUp">
-        <Grid MinWidth="280" MaxWidth="520" Margin="16,12,16,12">
+        <Grid x:Name="ContentGrid" MinWidth="280" MaxWidth="520" Margin="16,12,16,12">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
+                <RowDefinition x:Name="BodyRow" Height="Auto" />
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
@@ -85,55 +126,97 @@
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <TextBlock x:Name="StatusText" Grid.Column="0" VerticalAlignment="Center"
-                           FontSize="11.5" Foreground="{StaticResource Muted}"
+                           FontSize="11.5" Foreground="{DynamicResource Muted}"
                            TextTrimming="CharacterEllipsis" />
-                <Button x:Name="CloseButton" Grid.Column="1" Content="✕" Width="24" Height="22"
+                <!--
+                    Pinning belongs to the window rather than to any one state, so it sits
+                    in the header and stays reachable while recognizing, translating and
+                    after a failure alike. Spelled out in words on purpose: a pushpin glyph
+                    renders as a colour emoji on some machines and as a blank box on others.
+                -->
+                <Button x:Name="PinButton" Grid.Column="1" Content="钉住" Height="22" Margin="6,0,2,0"
+                        Padding="7,0" FontSize="11" Style="{StaticResource ChromeButton}"
+                        Background="Transparent" BorderThickness="0"
+                        Foreground="{DynamicResource Muted}" Click="PinButton_Click" />
+                <Button x:Name="CloseButton" Grid.Column="2" Content="✕" Width="24" Height="22"
                         Padding="0" FontSize="11" Style="{StaticResource ChromeButton}"
                         Background="Transparent" BorderThickness="0"
-                        Foreground="{StaticResource Muted}" Click="CloseButton_Click" />
+                        Foreground="{DynamicResource Muted}" Click="CloseButton_Click" />
             </Grid>
 
             <!-- body: the translation, or whatever there is to say instead -->
-            <ScrollViewer Grid.Row="1" Margin="0,8,0,0" MaxHeight="340"
+            <ScrollViewer x:Name="BodyScroll" Grid.Row="1" Margin="0,8,0,0" MaxHeight="340"
                           VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                 <StackPanel>
-                    <TextBlock x:Name="BodyText" TextWrapping="Wrap" LineHeight="24"
-                               FontSize="14" Foreground="{StaticResource Ink}" />
+                    <TextBox x:Name="BodyText" Style="{StaticResource SelectableText}"
+                             FontSize="14" Foreground="{DynamicResource Ink}"
+                             SelectionChanged="AnyText_SelectionChanged" />
 
                     <!-- the recognized text, kept available but out of the way -->
                     <Border x:Name="OriginalBlock" Visibility="Collapsed" Margin="0,10,0,0"
-                            Background="#FF12141B" BorderBrush="{StaticResource Line}"
+                            Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Line}"
                             BorderThickness="1" CornerRadius="4" Padding="10,8">
                         <StackPanel>
                             <TextBlock Text="原文（识别结果）" FontSize="11" Margin="0,0,0,4"
-                                       Foreground="{StaticResource Muted}" />
-                            <TextBlock x:Name="OriginalText" TextWrapping="Wrap" LineHeight="21"
-                                       FontSize="12.5" Foreground="{StaticResource Muted}" />
+                                       Foreground="{DynamicResource Muted}" />
+                            <TextBox x:Name="OriginalText" Style="{StaticResource SelectableText}"
+                                     FontSize="12.5" Foreground="{DynamicResource Muted}"
+                                     SelectionChanged="AnyText_SelectionChanged" />
                         </StackPanel>
                     </Border>
                 </StackPanel>
             </ScrollViewer>
 
             <!-- actions -->
-            <StackPanel x:Name="ActionPanel" Grid.Row="2" Orientation="Horizontal"
-                        Margin="0,12,0,0" Visibility="Collapsed">
-                <Button x:Name="CopyButton" Content="复制译文" Style="{StaticResource ChromeButton}"
+            <!--
+                Wraps rather than stacking in one line: the window is resizable now, and a
+                fixed row would push four buttons off the edge of a narrowed popup.
+            -->
+            <WrapPanel x:Name="ActionPanel" Grid.Row="2"
+                       Margin="0,12,22,-8" Visibility="Collapsed">
+                <Button x:Name="CopyButton" Content="复制译文" Margin="0,0,8,8"
+                        Style="{StaticResource ChromeButton}"
                         Click="CopyButton_Click" Visibility="Collapsed" />
-                <Button x:Name="OriginalButton" Content="原文" Margin="8,0,0,0"
+                <Button x:Name="CopyOriginalButton" Content="复制原文" Margin="0,0,8,8"
+                        Style="{StaticResource ChromeButton}"
+                        Click="CopyOriginalButton_Click" Visibility="Collapsed" />
+                <Button x:Name="OriginalButton" Content="显示原文" Margin="0,0,8,8"
                         Style="{StaticResource ChromeButton}"
                         Click="OriginalButton_Click" Visibility="Collapsed" />
-                <Button x:Name="RetryButton" Content="重试" Margin="8,0,0,0"
+                <!--
+                    Two different retries, because they cost different things. Re-running
+                    recognition re-reads the image; re-translating reuses the text that was
+                    already read, which is what you want when the OCR was fine and only the
+                    translation went wrong.
+                -->
+                <Button x:Name="RetranslateButton" Content="重新翻译" Margin="0,0,8,8"
+                        Style="{StaticResource ChromeButton}"
+                        Click="RetranslateButton_Click" Visibility="Collapsed" />
+                <Button x:Name="RetryButton" Content="重新识别" Margin="0,0,8,8"
                         Style="{StaticResource ChromeButton}"
                         Click="RetryButton_Click" Visibility="Collapsed" />
-                <Button x:Name="InstallButton" Content="一键安装语言包" Margin="8,0,0,0"
+                <Button x:Name="InstallButton" Content="一键安装语言包" Margin="0,0,8,8"
                         Style="{StaticResource PrimaryChromeButton}"
                         Click="InstallButton_Click" Visibility="Collapsed" />
-                <Button x:Name="SettingsButton" Content="打开系统设置" Margin="8,0,0,0"
+                <Button x:Name="SettingsButton" Content="打开系统设置" Margin="0,0,8,8"
                         Style="{StaticResource ChromeButton}"
                         Click="SettingsButton_Click" Visibility="Collapsed" />
-            </StackPanel>
+            </WrapPanel>
+
+            <!--
+                Purely the picture of a resize grip - IsHitTestVisible is off and the mouse
+                handling lives on the border, which treats the whole bottom-right corner as
+                the resize zone. An element this small is easy to miss by a pixel, and
+                missing it silently moved the window instead of resizing it.
+            -->
+            <Path Grid.Row="0" Grid.RowSpan="3" IsHitTestVisible="False"
+                  HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                  Margin="0,0,-11,-7" Opacity="0.8"
+                  Stroke="{DynamicResource Muted}" StrokeThickness="1.3"
+                  Data="M 0,12 L 12,0  M 5,12 L 12,5  M 10,12 L 12,10" />
         </Grid>
     </Border>
 </Window>

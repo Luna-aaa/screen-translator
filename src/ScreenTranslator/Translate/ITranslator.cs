@@ -22,8 +22,20 @@ public interface ITranslator
     /// <summary>False when required settings (address / key / model) are still blank.</summary>
     bool IsConfigured { get; }
 
-    /// <summary>Never throws; failures come back as an outcome with a readable message.</summary>
-    Task<TranslationOutcome> TranslateAsync(TranslationRequest request, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// Never throws; failures come back as an outcome with a readable message.
+    /// </summary>
+    /// <param name="onPartial">
+    /// Receives the text so far, each time more of it arrives, so the popup can fill in
+    /// as the model writes instead of after it finishes. Passing null asks for a single
+    /// reply at the end — which is also what an engine that cannot stream will do
+    /// regardless, so callers never have to ask whether streaming is supported.
+    /// Always raised on the caller's thread via IProgress.
+    /// </param>
+    Task<TranslationOutcome> TranslateAsync(
+        TranslationRequest request,
+        IProgress<string>? onPartial = null,
+        CancellationToken cancellationToken = default);
 
     /// <summary>Round-trips a tiny request so the settings screen can verify the setup.</summary>
     Task<TranslationOutcome> TestAsync(CancellationToken cancellationToken = default);
