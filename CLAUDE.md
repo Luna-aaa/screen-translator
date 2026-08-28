@@ -96,6 +96,11 @@ src/ScreenTranslator/
 `ContextMenu` 置空（默认右键菜单里的「粘贴」在这无意义，而且那个弹出窗会被
 `DismissWatcher` 当成「点了别处」）。副作用：`TextBox` 不支持 `LineHeight`，行距比以前紧一点。
 
+**历史窗口反过来：它是能拿焦点的普通窗口，所以 Ctrl+C 和默认右键菜单直接可用，
+故意保留。** 小窗需要「复制选中」按钮，纯粹是因为它拿不到键盘焦点——别把这条限制
+照抄到别的窗口上。历史窗口里那个按钮靠 `GotKeyboardFocus` 记住最后聚焦的文本框，
+因为点按钮的瞬间焦点就跑到按钮上了，但选区还在。
+
 **小窗配色全部走 `DynamicResource`。** `StaticResource` 在加载时就把颜色定死了，
 换不掉；主题是在构造函数里把 `Resources[key]` 整批替掉的（`ApplyTheme`）。
 新增一套配色 = 在 `PopupThemes.All` 里多写一条。

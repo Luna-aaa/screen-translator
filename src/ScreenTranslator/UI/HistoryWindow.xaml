@@ -2,7 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="屏幕划取翻译 — 最近的翻译"
-        Width="620" Height="560" MinWidth="480" MinHeight="360"
+        Width="660" Height="580" MinWidth="480" MinHeight="360"
         WindowStartupLocation="CenterScreen"
         FontFamily="Microsoft YaHei UI, Segoe UI, Microsoft YaHei"
         FontSize="13"
@@ -23,6 +23,34 @@
             <Setter Property="Cursor" Value="Hand" />
         </Style>
 
+        <Style x:Key="CardButton" TargetType="Button" BasedOn="{StaticResource MinorButton}">
+            <Setter Property="MinWidth" Value="0" />
+            <Setter Property="Padding" Value="10,3" />
+            <Setter Property="FontSize" Value="11.5" />
+        </Style>
+
+        <!--
+            Read-only TextBox rather than TextBlock, so the text can be selected with the
+            mouse - WPF's TextBlock cannot be. Unlike the result popup, this window does
+            take focus, so Ctrl+C and the built-in right-click menu work here and are left
+            in place; the buttons are for people who would rather not know that.
+            IsInactiveSelectionHighlightEnabled keeps the selection visible after a button
+            steals focus, which is exactly when the user is looking at it.
+        -->
+        <Style x:Key="SelectableText" TargetType="TextBox">
+            <Setter Property="IsReadOnly" Value="True" />
+            <Setter Property="IsReadOnlyCaretVisible" Value="False" />
+            <Setter Property="IsUndoEnabled" Value="False" />
+            <Setter Property="AcceptsReturn" Value="True" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="IsInactiveSelectionHighlightEnabled" Value="True" />
+            <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled" />
+            <Setter Property="ScrollViewer.VerticalScrollBarVisibility" Value="Disabled" />
+        </Style>
+
         <!--
             One card per record. The translation reads first and largest because that is
             what the user came back for; the recognized text sits underneath in a quieter
@@ -36,22 +64,28 @@
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
                         <TextBlock Grid.Column="0" Text="{Binding Header}" FontSize="11.5"
                                    Foreground="{StaticResource Muted}" VerticalAlignment="Center" />
-                        <Button Grid.Column="1" Content="复制译文" MinWidth="0" Padding="10,3"
-                                FontSize="11.5" Style="{StaticResource MinorButton}"
-                                Tag="{Binding}" Click="CopyRecord_Click" />
+                        <Button Grid.Column="1" Content="复制译文" Style="{StaticResource CardButton}"
+                                Tag="{Binding}" Click="CopyTranslation_Click" />
+                        <Button Grid.Column="2" Content="复制原文" Margin="8,0,0,0"
+                                Style="{StaticResource CardButton}"
+                                Tag="{Binding}" Click="CopyOriginal_Click" />
                     </Grid>
 
-                    <TextBlock Text="{Binding Record.Translation}" TextWrapping="Wrap"
-                               LineHeight="22" Foreground="{StaticResource Ink}" />
+                    <TextBox Text="{Binding Record.Translation, Mode=OneWay}"
+                             Style="{StaticResource SelectableText}"
+                             Foreground="{StaticResource Ink}"
+                             GotKeyboardFocus="RecordText_GotKeyboardFocus" />
 
                     <Border Margin="0,10,0,0" Background="#FFF7F8FA" BorderBrush="#FFEBEDF2"
                             BorderThickness="1" CornerRadius="4" Padding="10,8">
-                        <TextBlock Text="{Binding Record.Original}" TextWrapping="Wrap"
-                                   FontSize="12" LineHeight="20"
-                                   Foreground="{StaticResource Muted}" />
+                        <TextBox Text="{Binding Record.Original, Mode=OneWay}"
+                                 Style="{StaticResource SelectableText}"
+                                 FontSize="12" Foreground="{StaticResource Muted}"
+                                 GotKeyboardFocus="RecordText_GotKeyboardFocus" />
                     </Border>
                 </StackPanel>
             </Border>
@@ -64,8 +98,8 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <!-- ItemsControl rather than ListBox: nothing here is selectable, so selection
-             highlighting would only be misleading chrome. -->
+        <!-- ItemsControl rather than ListBox: nothing here is selectable as a row, so
+             selection highlighting would only be misleading chrome. -->
         <ScrollViewer Grid.Row="0" Padding="16,16,16,0" VerticalScrollBarVisibility="Auto">
             <StackPanel>
                 <TextBlock x:Name="EmptyText" Visibility="Collapsed"
@@ -76,19 +110,31 @@
         </ScrollViewer>
 
         <Border Grid.Row="1" Background="White" BorderBrush="#FFE2E5EC" BorderThickness="0,1,0,0"
-                Padding="16,12">
+                Padding="16,10">
             <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
-                <TextBlock x:Name="StatusText" Grid.Column="0" VerticalAlignment="Center"
-                           FontSize="11.5" Foreground="{StaticResource Muted}" TextWrapping="Wrap" />
-                <Button Grid.Column="1" Content="清空" Style="{StaticResource MinorButton}"
-                        Click="Clear_Click" />
-                <Button Grid.Column="2" Content="关闭" Margin="8,0,0,0"
+
+                <TextBlock Grid.Row="0" Grid.Column="0" VerticalAlignment="Center"
+                           FontSize="11.5" Foreground="{StaticResource Muted}" TextWrapping="Wrap"
+                           Text="用鼠标拖选任意一段文字，然后点「复制选中」，或者直接按 Ctrl+C、右键选复制。" />
+                <Button Grid.Row="0" Grid.Column="1" Content="复制选中"
+                        Style="{StaticResource MinorButton}" Click="CopySelection_Click" />
+                <Button Grid.Row="0" Grid.Column="2" Content="清空" Margin="8,0,0,0"
+                        Style="{StaticResource MinorButton}" Click="Clear_Click" />
+                <Button Grid.Row="0" Grid.Column="3" Content="关闭" Margin="8,0,0,0"
                         Style="{StaticResource MinorButton}" IsCancel="True" Click="Close_Click" />
+
+                <TextBlock x:Name="StatusText" Grid.Row="1" Grid.ColumnSpan="4" Margin="0,8,0,0"
+                           FontSize="11.5" Foreground="{StaticResource Muted}" TextWrapping="Wrap" />
             </Grid>
         </Border>
     </Grid>
