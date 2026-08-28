@@ -120,6 +120,7 @@ public partial class App : Application
         if (isNewConfig)
         {
             config.OcrCandidateLanguages = installed;
+            config.SchemaVersion = AppConfig.CurrentSchemaVersion;
             ConfigStore.Save(config);
             Log.Info($"首次运行：候选识别语言设为系统已装的 {string.Join(", ", installed)}");
             return;
@@ -404,25 +405,49 @@ public partial class App : Application
         }
         catch (HotkeyRegistrationException ex)
         {
-            if (previous is not null)
-            {
-                try { _hotkey!.Register(previous); } catch { /* the old one is gone too */ }
-            }
+            RestoreHotkey(previous);
             _hotkeyProblem = ex.Message;
             return ex.Message;
         }
 
+        // Any later failure has to undo the hotkey too, otherwise the running app answers to
+        // a hotkey that neither the config file nor the tray menu agrees with, and the
+        // change evaporates on the next restart.
         if (!AutoStart.SetEnabled(updated.AutoStart))
+        {
+            RestoreHotkey(previous);
             return "开机自启设置写入失败，详情见日志。";
+        }
 
         if (!ConfigStore.Save(updated))
+        {
+            RestoreHotkey(previous);
+            AutoStart.SetEnabled(Config.AutoStart);
             return "配置文件保存失败，详情见日志。";
+        }
 
         Config = updated;
         _tray?.SetHotkeyHint(spec.ToString());
         _tray?.SetAutoStartChecked(updated.AutoStart);
         PushHotkeyStatus();
         return null;
+    }
+
+    /// <summary>Puts the previously working hotkey back after a failed settings apply.</summary>
+    private void RestoreHotkey(HotkeySpec? previous)
+    {
+        if (previous is null) return;
+        try
+        {
+            _hotkey!.Register(previous);
+            _tray?.SetHotkeyHint(previous.ToString());
+        }
+        catch (Exception ex)
+        {
+            // Someone else grabbed it in the meantime; nothing left to fall back to.
+            Log.Warn($"回退到原快捷键 {previous} 失败：{ex.Message}");
+            _tray?.SetHotkeyHint(null);
+        }
     }
 
     // ---------------------------------------------------------------- shutdown

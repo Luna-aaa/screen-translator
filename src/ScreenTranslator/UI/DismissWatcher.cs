@@ -27,6 +27,23 @@ internal sealed class DismissWatcher : IDisposable
 
     private bool _mouseWasDown;
     private bool _disposed;
+    private bool _suspended;
+
+    /// <summary>
+    /// Stops watching while the popup deliberately hands control to something else — the
+    /// elevated PowerShell that installs a language pack, for instance. Without this, the
+    /// user clicking that console counts as "clicked elsewhere" and closes the popup out
+    /// from under the operation still running inside it.
+    /// </summary>
+    public void Suspend() => _suspended = true;
+
+    public void Resume()
+    {
+        // Re-seed, so a button still held from whatever the user was doing does not read as
+        // a fresh click the moment watching resumes.
+        _mouseWasDown = AnyMouseButtonDown();
+        _suspended = false;
+    }
 
     public DismissWatcher(Func<RECT?> getWindowRect, Action dismiss)
     {
@@ -44,7 +61,7 @@ internal sealed class DismissWatcher : IDisposable
 
     private void OnTick(object? sender, EventArgs e)
     {
-        if (_disposed) return;
+        if (_disposed || _suspended) return;
 
         if (IsDown(VK_ESCAPE))
         {

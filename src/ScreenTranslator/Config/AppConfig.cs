@@ -15,7 +15,13 @@ public sealed class AppConfig
     /// </summary>
     public const int CurrentSchemaVersion = 2;
 
-    public int SchemaVersion { get; set; } = CurrentSchemaVersion;
+    /// <summary>
+    /// Defaults to 1, NOT the current version. System.Text.Json leaves a property at its
+    /// initializer when the JSON has no such field, so defaulting to the current version
+    /// would make every pre-existing config claim to be already migrated and silently skip
+    /// the migration that exists for exactly those files.
+    /// </summary>
+    public int SchemaVersion { get; set; } = 1;
 
     // ---- general ----------------------------------------------------------
     public string Hotkey { get; set; } = "Ctrl+Alt+Q";

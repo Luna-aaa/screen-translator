@@ -49,8 +49,16 @@ public partial class ResultWindow : Window
 
     private readonly CancellationTokenSource _lifetime = new();
 
+    /// <summary>
+    /// Handed out instead of <c>_lifetime.Token</c>: the CancellationTokenSource's Token
+    /// property throws once the source is disposed, and callers legitimately read this
+    /// after every await — including inside their own catch blocks — long after the popup
+    /// has closed. A token captured up front keeps working.
+    /// </summary>
+    private readonly CancellationToken _lifetimeToken;
+
     /// <summary>Cancelled when the popup closes, so in-flight work stops with it.</summary>
-    public CancellationToken Lifetime => _lifetime.Token;
+    public CancellationToken Lifetime => _lifetimeToken;
 
     private bool _dragging;
     private bool _userMoved;
@@ -68,6 +76,7 @@ public partial class ResultWindow : Window
         InitializeComponent();
         Image = image;
         _selection = selection;
+        _lifetimeToken = _lifetime.Token;
 
         // Content changes (recognizing -> result) resize the window, and it has to stay
         // anchored to the selection when that happens.
@@ -303,7 +312,6 @@ public partial class ResultWindow : Window
         if (rect is null) return;
 
         _dragging = true;
-        _userMoved = true;
         _dragCursorOrigin = new Point(cursor.X, cursor.Y);
         _dragWindowOrigin = new Point(rect.Value.Left, rect.Value.Top);
         RootBorder.CaptureMouse();
@@ -314,9 +322,17 @@ public partial class ResultWindow : Window
         if (!_dragging) return;
         if (!GetCursorPos(out var cursor)) return;
 
-        MoveTo(new Point(
-            _dragWindowOrigin.X + (cursor.X - _dragCursorOrigin.X),
-            _dragWindowOrigin.Y + (cursor.Y - _dragCursorOrigin.Y)));
+        var dx = cursor.X - _dragCursorOrigin.X;
+        var dy = cursor.Y - _dragCursorOrigin.Y;
+        if (dx == 0 && dy == 0) return;
+
+        // Only an actual movement counts as "the user placed this window", and only then
+        // does auto-positioning stop. Setting it on mouse-down instead meant a mere click
+        // froze the position, so a popup that later grew with the translation stayed put
+        // and hung off the screen edge.
+        _userMoved = true;
+
+        MoveTo(new Point(_dragWindowOrigin.X + dx, _dragWindowOrigin.Y + dy));
     }
 
     private void Root_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
@@ -370,6 +386,11 @@ public partial class ResultWindow : Window
     {
         if (_missingLanguages.Count == 0) return;
 
+        // The install puts an elevated console on screen for several seconds. Clicking it
+        // would otherwise register as "clicked outside" and close this popup while the
+        // handler below is still writing to it.
+        _watcher?.Suspend();
+
         InstallButton.IsEnabled = false;
         var original = InstallButton.Content;
         InstallButton.Content = "安装中…";
@@ -389,6 +410,8 @@ public partial class ResultWindow : Window
                 }
             }
 
+            if (_closing) return;   // closed while the installer was running
+
             if (allInstalled)
             {
                 StatusText.Text = "语言包已装好，正在重新识别…";
@@ -398,12 +421,16 @@ public partial class ResultWindow : Window
         catch (Exception ex)
         {
             Log.Error("安装语言包时出错", ex);
-            BodyText.Text = $"安装出错：{ex.Message}";
+            if (!_closing) BodyText.Text = $"安装出错：{ex.Message}";
         }
         finally
         {
-            InstallButton.IsEnabled = true;
-            InstallButton.Content = original;
+            if (!_closing)
+            {
+                InstallButton.IsEnabled = true;
+                InstallButton.Content = original;
+            }
+            _watcher?.Resume();
         }
     }
 
@@ -440,9 +467,13 @@ public partial class ResultWindow : Window
     protected override void OnClosed(EventArgs e)
     {
         _closing = true;
-        // Stop any recognition or translation still in flight for this popup.
-        try { _lifetime.Cancel(); } catch { /* already disposed */ }
-        _lifetime.Dispose();
+
+        // Cancel, but deliberately do NOT dispose: work started before the close may still
+        // be registering continuations on this token, and registering against a disposed
+        // source throws. The source holds no unmanaged resources, so letting the GC take it
+        // costs nothing.
+        try { _lifetime.Cancel(); } catch (Exception ex) { Log.Warn($"取消小窗任务时出错：{ex.Message}"); }
+
         _watcher?.Dispose();
         _watcher = null;
         Image.Dispose();

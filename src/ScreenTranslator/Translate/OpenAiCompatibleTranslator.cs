@@ -300,10 +300,15 @@ public sealed class OpenAiCompatibleTranslator : ITranslator, IModelCatalog
             using var document = JsonDocument.Parse(body);
             var root = document.RootElement;
 
-            var array = root.ValueKind == JsonValueKind.Array ? root
-                : root.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Array ? data
-                : root.TryGetProperty("models", out var models) && models.ValueKind == JsonValueKind.Array ? models
-                : default;
+            var array = root.ValueKind switch
+            {
+                JsonValueKind.Array => root,
+                JsonValueKind.Object when root.TryGetProperty("data", out var data)
+                    && data.ValueKind == JsonValueKind.Array => data,
+                JsonValueKind.Object when root.TryGetProperty("models", out var models)
+                    && models.ValueKind == JsonValueKind.Array => models,
+                _ => default,
+            };
 
             if (array.ValueKind != JsonValueKind.Array) return ids;
 
@@ -312,15 +317,17 @@ public sealed class OpenAiCompatibleTranslator : ITranslator, IModelCatalog
                 var id = item.ValueKind switch
                 {
                     JsonValueKind.String => item.GetString(),
-                    JsonValueKind.Object when item.TryGetProperty("id", out var idProp) => idProp.GetString(),
-                    JsonValueKind.Object when item.TryGetProperty("name", out var nameProp) => nameProp.GetString(),
+                    JsonValueKind.Object when item.TryGetProperty("id", out var idProp)
+                        && idProp.ValueKind == JsonValueKind.String => idProp.GetString(),
+                    JsonValueKind.Object when item.TryGetProperty("name", out var nameProp)
+                        && nameProp.ValueKind == JsonValueKind.String => nameProp.GetString(),
                     _ => null,
                 };
 
                 if (!string.IsNullOrWhiteSpace(id)) ids.Add(id!);
             }
         }
-        catch (JsonException)
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException)
         {
             return ids;
         }
@@ -377,21 +384,32 @@ public sealed class OpenAiCompatibleTranslator : ITranslator, IModelCatalog
 
     // ------------------------------------------------------------------- json
 
+    // Both readers below must be total: they run on whatever a third-party service replied
+    // with, and an exception escaping here would surface a raw CLR message instead of the
+    // plain-language one the caller already worked out. JsonElement is unforgiving -
+    // TryGetProperty throws on a non-object and GetString throws on a non-string - so every
+    // access is guarded by ValueKind and the catch covers InvalidOperationException too.
+
     private static string? ExtractContent(string body)
     {
         try
         {
             using var document = JsonDocument.Parse(body);
-            if (!document.RootElement.TryGetProperty("choices", out var choices)) return null;
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return null;
+
+            if (!root.TryGetProperty("choices", out var choices)) return null;
             if (choices.ValueKind != JsonValueKind.Array || choices.GetArrayLength() == 0) return null;
 
             var first = choices[0];
-            if (!first.TryGetProperty("message", out var messageElement)) return null;
+            if (first.ValueKind != JsonValueKind.Object) return null;
+            if (!first.TryGetProperty("message", out var messageElement)
+                || messageElement.ValueKind != JsonValueKind.Object) return null;
             if (!messageElement.TryGetProperty("content", out var content)) return null;
 
-            return content.GetString();
+            return content.ValueKind == JsonValueKind.String ? content.GetString() : null;
         }
-        catch (JsonException)
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException)
         {
             return null;
         }
@@ -403,20 +421,28 @@ public sealed class OpenAiCompatibleTranslator : ITranslator, IModelCatalog
         {
             using var document = JsonDocument.Parse(body);
             var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return null;
 
             if (root.TryGetProperty("error", out var error))
             {
                 if (error.ValueKind == JsonValueKind.String) return error.GetString();
-                if (error.TryGetProperty("message", out var message)) return message.GetString();
+                if (error.ValueKind == JsonValueKind.Object
+                    && error.TryGetProperty("message", out var message)
+                    && message.ValueKind == JsonValueKind.String)
+                {
+                    return message.GetString();
+                }
             }
 
             // Some Chinese vendors return a flat {"message": "..."} or {"msg": "..."}.
-            if (root.TryGetProperty("message", out var flat)) return flat.GetString();
-            if (root.TryGetProperty("msg", out var msg)) return msg.GetString();
+            if (root.TryGetProperty("message", out var flat) && flat.ValueKind == JsonValueKind.String)
+                return flat.GetString();
+            if (root.TryGetProperty("msg", out var msg) && msg.ValueKind == JsonValueKind.String)
+                return msg.GetString();
 
             return null;
         }
-        catch (JsonException)
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException)
         {
             return null;
         }

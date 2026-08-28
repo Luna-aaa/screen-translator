@@ -44,7 +44,12 @@ public static class ConfigStore
             var cfg = JsonSerializer.Deserialize<AppConfig>(json, Options);
             if (cfg is null)
             {
+                // Report this as "created": the caller seeds a fresh config from the machine
+                // and writes it back, which is exactly what a recovered-from-nothing config
+                // needs. Reporting false would leave it unseeded and unsaved, repeating
+                // every launch.
                 Log.Warn("配置文件内容为空，改用默认配置");
+                created = true;
                 return new AppConfig();
             }
 
@@ -56,6 +61,7 @@ public static class ConfigStore
         {
             Log.Error("读取配置失败，改用默认配置", ex);
             BackupCorruptFile();
+            created = true;   // see the null case above
             return new AppConfig();
         }
     }

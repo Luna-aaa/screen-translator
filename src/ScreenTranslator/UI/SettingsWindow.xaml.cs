@@ -53,7 +53,14 @@ public partial class SettingsWindow : Window
         Icon = AppIcon.WindowIcon;
 
         _working = config.Clone();
-        _pendingHotkey = HotkeySpec.TryParse(_working.Hotkey, out var parsed) ? parsed! : HotkeySpec.Default;
+
+        // Must match the app's own rule (App.RegisterStartupHotkey), including IsUsable.
+        // Accepting a parseable-but-unusable combo here would show the user one hotkey
+        // while the app runs another, and then reject every save - including saves of
+        // unrelated settings like the API key - with an error about a field they never touched.
+        _pendingHotkey = HotkeySpec.TryParse(_working.Hotkey, out var parsed) && parsed.IsUsable
+            ? parsed
+            : HotkeySpec.Default;
 
         LoadFromConfig();
     }
