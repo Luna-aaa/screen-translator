@@ -1,0 +1,139 @@
+<Window x:Class="ScreenTranslator.UI.ResultWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="ScreenTranslator.Result"
+        WindowStyle="None"
+        ShowActivated="False"
+        ShowInTaskbar="False"
+        Topmost="True"
+        ResizeMode="NoResize"
+        SizeToContent="WidthAndHeight"
+        WindowStartupLocation="Manual"
+        Left="-20000" Top="-20000"
+        Background="#FF191B23"
+        FontFamily="Microsoft YaHei UI, Segoe UI, Microsoft YaHei"
+        UseLayoutRounding="True"
+        TextOptions.TextFormattingMode="Display">
+
+    <!--
+        AllowsTransparency is deliberately left off: it would let us draw our own rounded
+        corners and shadow, but it also drops WPF into a slower rendering path and costs
+        sub-pixel text antialiasing, which matters a lot for a window whose entire job is
+        displaying text. Rounded corners come from the Windows 11 DWM attribute instead
+        (see ResultWindow.xaml.cs); on Windows 10 the corners are simply square.
+    -->
+
+    <Window.Resources>
+        <SolidColorBrush x:Key="Ink" Color="#FFE9EBF2" />
+        <SolidColorBrush x:Key="Muted" Color="#FF98A0B4" />
+        <SolidColorBrush x:Key="Accent" Color="#FF7C9BFF" />
+        <SolidColorBrush x:Key="Warn" Color="#FFFFC46B" />
+        <SolidColorBrush x:Key="Line" Color="#FF2C303C" />
+
+        <Style x:Key="ChromeButton" TargetType="Button">
+            <Setter Property="Foreground" Value="{StaticResource Ink}" />
+            <Setter Property="Background" Value="#FF262A36" />
+            <Setter Property="BorderBrush" Value="#FF383D4C" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="11,5" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" CornerRadius="4"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}">
+                            <ContentPresenter Margin="{TemplateBinding Padding}"
+                                              HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#FF333949" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.45" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="PrimaryChromeButton" TargetType="Button" BasedOn="{StaticResource ChromeButton}">
+            <Setter Property="Background" Value="#FF3D5AFE" />
+            <Setter Property="BorderBrush" Value="#FF3D5AFE" />
+            <Setter Property="Foreground" Value="White" />
+        </Style>
+    </Window.Resources>
+
+    <Border x:Name="RootBorder" BorderBrush="{StaticResource Line}" BorderThickness="1" Padding="0"
+            Background="Transparent" Cursor="SizeAll"
+            MouseLeftButtonDown="Root_MouseLeftButtonDown"
+            MouseMove="Root_MouseMove"
+            MouseLeftButtonUp="Root_MouseLeftButtonUp">
+        <Grid MinWidth="280" MaxWidth="520" Margin="16,12,16,12">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <!-- header -->
+            <Grid Grid.Row="0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock x:Name="StatusText" Grid.Column="0" VerticalAlignment="Center"
+                           FontSize="11.5" Foreground="{StaticResource Muted}"
+                           TextTrimming="CharacterEllipsis" />
+                <Button x:Name="CloseButton" Grid.Column="1" Content="✕" Width="24" Height="22"
+                        Padding="0" FontSize="11" Style="{StaticResource ChromeButton}"
+                        Background="Transparent" BorderThickness="0"
+                        Foreground="{StaticResource Muted}" Click="CloseButton_Click" />
+            </Grid>
+
+            <!-- body: the translation, or whatever there is to say instead -->
+            <ScrollViewer Grid.Row="1" Margin="0,8,0,0" MaxHeight="340"
+                          VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                <StackPanel>
+                    <TextBlock x:Name="BodyText" TextWrapping="Wrap" LineHeight="24"
+                               FontSize="14" Foreground="{StaticResource Ink}" />
+
+                    <!-- the recognized text, kept available but out of the way -->
+                    <Border x:Name="OriginalBlock" Visibility="Collapsed" Margin="0,10,0,0"
+                            Background="#FF12141B" BorderBrush="{StaticResource Line}"
+                            BorderThickness="1" CornerRadius="4" Padding="10,8">
+                        <StackPanel>
+                            <TextBlock Text="原文（识别结果）" FontSize="11" Margin="0,0,0,4"
+                                       Foreground="{StaticResource Muted}" />
+                            <TextBlock x:Name="OriginalText" TextWrapping="Wrap" LineHeight="21"
+                                       FontSize="12.5" Foreground="{StaticResource Muted}" />
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </ScrollViewer>
+
+            <!-- actions -->
+            <StackPanel x:Name="ActionPanel" Grid.Row="2" Orientation="Horizontal"
+                        Margin="0,12,0,0" Visibility="Collapsed">
+                <Button x:Name="CopyButton" Content="复制译文" Style="{StaticResource ChromeButton}"
+                        Click="CopyButton_Click" Visibility="Collapsed" />
+                <Button x:Name="OriginalButton" Content="原文" Margin="8,0,0,0"
+                        Style="{StaticResource ChromeButton}"
+                        Click="OriginalButton_Click" Visibility="Collapsed" />
+                <Button x:Name="RetryButton" Content="重试" Margin="8,0,0,0"
+                        Style="{StaticResource ChromeButton}"
+                        Click="RetryButton_Click" Visibility="Collapsed" />
+                <Button x:Name="InstallButton" Content="一键安装语言包" Margin="8,0,0,0"
+                        Style="{StaticResource PrimaryChromeButton}"
+                        Click="InstallButton_Click" Visibility="Collapsed" />
+                <Button x:Name="SettingsButton" Content="打开系统设置" Margin="8,0,0,0"
+                        Style="{StaticResource ChromeButton}"
+                        Click="SettingsButton_Click" Visibility="Collapsed" />
+            </StackPanel>
+        </Grid>
+    </Border>
+</Window>

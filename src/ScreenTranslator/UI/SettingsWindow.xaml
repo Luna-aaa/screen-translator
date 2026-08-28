@@ -1,0 +1,322 @@
+<Window x:Class="ScreenTranslator.UI.SettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="屏幕划取翻译 — 设置"
+        Width="640" Height="600" MinWidth="560" MinHeight="480"
+        WindowStartupLocation="CenterScreen"
+        FontFamily="Microsoft YaHei UI, Segoe UI, Microsoft YaHei"
+        FontSize="13"
+        Background="#FFF4F5F8"
+        UseLayoutRounding="True"
+        TextOptions.TextFormattingMode="Display">
+
+    <Window.Resources>
+        <SolidColorBrush x:Key="Ink" Color="#FF1F2330" />
+        <SolidColorBrush x:Key="Muted" Color="#FF6B7280" />
+        <SolidColorBrush x:Key="Accent" Color="#FF3D5AFE" />
+        <SolidColorBrush x:Key="Danger" Color="#FFC62828" />
+        <SolidColorBrush x:Key="Ok" Color="#FF1B7F3B" />
+
+        <Style x:Key="SectionTitle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Foreground" Value="{StaticResource Ink}" />
+            <Setter Property="Margin" Value="0,0,0,6" />
+        </Style>
+
+        <Style x:Key="Hint" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="11.5" />
+            <Setter Property="Foreground" Value="{StaticResource Muted}" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+            <Setter Property="Margin" Value="0,5,0,0" />
+        </Style>
+
+        <Style x:Key="Block" TargetType="StackPanel">
+            <Setter Property="Margin" Value="0,0,0,20" />
+        </Style>
+
+        <Style TargetType="TextBox">
+            <Setter Property="Padding" Value="7,6" />
+            <Setter Property="BorderBrush" Value="#FFD2D6DE" />
+            <Setter Property="Background" Value="White" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+        </Style>
+
+        <Style TargetType="PasswordBox">
+            <Setter Property="Padding" Value="7,6" />
+            <Setter Property="BorderBrush" Value="#FFD2D6DE" />
+            <Setter Property="Background" Value="White" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+        </Style>
+
+        <Style TargetType="CheckBox">
+            <Setter Property="Margin" Value="0,0,0,8" />
+            <Setter Property="Foreground" Value="{StaticResource Ink}" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+        </Style>
+
+        <Style x:Key="MinorButton" TargetType="Button">
+            <Setter Property="Padding" Value="12,6" />
+            <Setter Property="MinWidth" Value="86" />
+            <Setter Property="Background" Value="White" />
+            <Setter Property="BorderBrush" Value="#FFD2D6DE" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+
+        <Style x:Key="PrimaryButton" TargetType="Button" BasedOn="{StaticResource MinorButton}">
+            <Setter Property="Background" Value="{StaticResource Accent}" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="BorderBrush" Value="{StaticResource Accent}" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+
+        <Style TargetType="TabItem">
+            <Setter Property="Padding" Value="16,7" />
+        </Style>
+    </Window.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <TabControl Grid.Row="0" Margin="14,14,14,0" Background="Transparent" BorderThickness="0,1,0,0"
+                    BorderBrush="#FFDDE1E8">
+
+            <!-- ================================ 通用 ================================ -->
+            <TabItem Header="通用">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="18,18,18,8">
+                    <StackPanel>
+
+                        <StackPanel Style="{StaticResource Block}">
+                            <TextBlock Text="全局快捷键" Style="{StaticResource SectionTitle}" />
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBox x:Name="HotkeyBox" Grid.Column="0" IsReadOnly="True"
+                                         IsReadOnlyCaretVisible="False"
+                                         InputMethod.IsInputMethodEnabled="False"
+                                         FontWeight="SemiBold"
+                                         PreviewKeyDown="HotkeyBox_PreviewKeyDown" />
+                                <Button x:Name="ResetHotkeyButton" Grid.Column="1" Margin="8,0,0,0"
+                                        Content="恢复默认" Style="{StaticResource MinorButton}"
+                                        Click="ResetHotkeyButton_Click" />
+                            </Grid>
+                            <TextBlock Style="{StaticResource Hint}"
+                                       Text="点一下上面的框，然后直接按下你想用的组合键。必须带 Ctrl / Alt / Win 其中之一（单独的 F1–F12 也可以）。" />
+                            <TextBlock x:Name="HotkeyStatusText" Style="{StaticResource Hint}" Margin="0,6,0,0" />
+                        </StackPanel>
+
+                        <StackPanel Style="{StaticResource Block}">
+                            <TextBlock Text="启动" Style="{StaticResource SectionTitle}" />
+                            <CheckBox x:Name="AutoStartCheck" Content="开机时自动启动" />
+                            <TextBlock Style="{StaticResource Hint}"
+                                       Text="通过当前用户的注册表启动项实现，不需要管理员权限。程序换位置后重新勾选一次即可。" />
+                        </StackPanel>
+
+                        <StackPanel Style="{StaticResource Block}">
+                            <TextBlock Text="截图" Style="{StaticResource SectionTitle}" />
+                            <CheckBox x:Name="SaveCapturesCheck" Content="保留每次框选的截图" />
+                            <Grid Margin="0,4,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBox x:Name="CaptureDirBox" Grid.Column="0" />
+                                <Button Grid.Column="1" Margin="8,0,0,0" Content="浏览…" MinWidth="72"
+                                        Style="{StaticResource MinorButton}" Click="BrowseCaptureDir_Click" />
+                                <Button Grid.Column="2" Margin="8,0,0,0" Content="打开" MinWidth="60"
+                                        Style="{StaticResource MinorButton}" Click="OpenCaptureDir_Click" />
+                            </Grid>
+                            <TextBlock x:Name="CaptureDirText" Style="{StaticResource Hint}" />
+                        </StackPanel>
+
+                        <StackPanel Style="{StaticResource Block}">
+                            <TextBlock Text="文件位置" Style="{StaticResource SectionTitle}" />
+                            <StackPanel Orientation="Horizontal">
+                                <Button Content="打开数据目录" Style="{StaticResource MinorButton}"
+                                        Click="OpenDataDir_Click" />
+                                <Button Content="打开日志目录" Style="{StaticResource MinorButton}" Margin="8,0,0,0"
+                                        Click="OpenLogDir_Click" />
+                            </StackPanel>
+                            <TextBlock x:Name="DataDirText" Style="{StaticResource Hint}" />
+                        </StackPanel>
+
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ================================ 翻译 ================================ -->
+            <TabItem Header="翻译">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="18,18,18,8">
+                    <StackPanel>
+
+                        <StackPanel Style="{StaticResource Block}">
+                            <TextBlock Text="翻译服务" Style="{StaticResource SectionTitle}" />
+                            <ComboBox x:Name="PresetCombo" Padding="7,6"
+                                      SelectionChanged="PresetCombo_SelectionChanged" />
+                            <TextBlock x:Name="PresetHintText" Style="{StaticResource Hint}" />
+                        </StackPanel>
+
+                        <StackPanel Style="{StaticResource Block}">
+                            <TextBlock Text="接口地址" Style="{StaticResource SectionTitle}" />
+                            <TextBox x:Name="BaseUrlBox" />
+                            <TextBlock Style="{StaticResource Hint}"
+                                       Text="要填到 /v1 这一层，程序会自动接上 /chat/completions。" />
+                        </StackPanel>
+
+                        <StackPanel Style="{StaticResource Block}">
+                            <TextBlock Text="API Key" Style="{StaticResource SectionTitle}" />
+                            <Grid>
+                                <PasswordBox x:Name="ApiKeyBox" />
+                                <TextBox x:Name="ApiKeyPlainBox" Visibility="Collapsed" />
+                            </Grid>
+                            <CheckBox x:Name="ShowKeyCheck" Content="显示 Key" Margin="0,8,0,0"
+                                      Checked="ShowKeyCheck_Changed" Unchecked="ShowKeyCheck_Changed" />
+                            <TextBlock Style="{StaticResource Hint}"
+                                       Text="Key 用 Windows 账户密钥加密后存到 config.json，文件里看不到明文，换台电脑也解不开。" />
+                        </StackPanel>
+
+                        <StackPanel Style="{StaticResource Block}">
+                            <TextBlock Text="模型" Style="{StaticResource SectionTitle}" />
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <!-- Editable: pick from what the service reports, or just type one. -->
+                                <ComboBox x:Name="ModelBox" Grid.Column="0" IsEditable="True" Padding="7,6" />
+                                <Button x:Name="FetchModelsButton" Grid.Column="1" Margin="8,0,0,0"
+                                        Content="拉取模型" MinWidth="88"
+                                        Style="{StaticResource MinorButton}" Click="FetchModels_Click" />
+                            </Grid>
+                            <TextBlock x:Name="ModelHintText" Style="{StaticResource Hint}"
+                                       Text="点「拉取模型」会问服务商它当前支持哪些模型，省得去翻文档。也可以直接手填。" />
+                        </StackPanel>
+
+                        <StackPanel Style="{StaticResource Block}">
+                            <TextBlock Text="超时（秒）" Style="{StaticResource SectionTitle}" />
+                            <TextBox x:Name="TimeoutBox" Width="110" HorizontalAlignment="Left" />
+                        </StackPanel>
+
+                        <StackPanel Style="{StaticResource Block}">
+                            <TextBlock Text="附加要求（可选）" Style="{StaticResource SectionTitle}" />
+                            <TextBox x:Name="ExtraPromptBox" Height="66" AcceptsReturn="True"
+                                     TextWrapping="Wrap" VerticalContentAlignment="Top"
+                                     VerticalScrollBarVisibility="Auto" />
+                            <TextBlock Style="{StaticResource Hint}"
+                                       Text="例如：这是游戏对话，翻得口语一点，保留角色名不译。" />
+                        </StackPanel>
+
+                        <StackPanel Style="{StaticResource Block}">
+                            <Button x:Name="TestConnectionButton" Content="测试连接"
+                                    Style="{StaticResource MinorButton}" HorizontalAlignment="Left"
+                                    MinWidth="110" Click="TestConnection_Click"
+                                    ToolTip="用当前填写的内容真发一次翻译请求" />
+                            <TextBlock x:Name="TestResultText" Style="{StaticResource Hint}"
+                                       Text="会用上面填的地址、Key 和模型真发一次请求。" />
+                        </StackPanel>
+
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ============================== 文字识别 ============================== -->
+            <TabItem Header="文字识别">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="18,18,18,8">
+                    <StackPanel>
+
+                        <StackPanel Style="{StaticResource Block}">
+                            <TextBlock Text="源语言" Style="{StaticResource SectionTitle}" />
+                            <ComboBox x:Name="SourceLanguageCombo" Padding="7,6"
+                                      SelectionChanged="SourceLanguageCombo_SelectionChanged" />
+                            <TextBlock Style="{StaticResource Hint}"
+                                       Text="系统的文字识别不会自己判断语言，必须指定。选「自动」时，程序会在下面勾选的语言里各试一遍，挑最合理的结果——锁定成固定语言会更快也更准。" />
+                        </StackPanel>
+
+                        <StackPanel x:Name="CandidatePanel" Style="{StaticResource Block}">
+                            <TextBlock Text="自动识别时尝试这些语言" Style="{StaticResource SectionTitle}" />
+                            <CheckBox x:Name="LangEnCheck" Content="英文（en-US）" />
+                            <CheckBox x:Name="LangJaCheck" Content="日文（ja-JP）" />
+                            <CheckBox x:Name="LangZhCheck" Content="中文（zh-Hans-CN）" />
+                            <CheckBox x:Name="LangKoCheck" Content="韩文（ko-KR）" />
+                            <TextBlock Style="{StaticResource Hint}"
+                                       Text="勾得越多越慢，建议只勾你真正会遇到的语言。" />
+                        </StackPanel>
+
+                        <StackPanel Style="{StaticResource Block}">
+                            <Grid Margin="0,0,0,6">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="语言包状态" Style="{StaticResource SectionTitle}"
+                                           Margin="0" VerticalAlignment="Center" />
+                                <Button Grid.Column="1" Content="刷新" MinWidth="56" Padding="10,3"
+                                        Style="{StaticResource MinorButton}" Click="RefreshLanguagePacks_Click" />
+                            </Grid>
+                            <Border Background="White" BorderBrush="#FFD2D6DE" BorderThickness="1" Padding="10,6">
+                                <StackPanel x:Name="LanguagePackPanel" />
+                            </Border>
+                            <TextBlock x:Name="LanguagePackHint" Style="{StaticResource Hint}" />
+                        </StackPanel>
+
+                        <StackPanel Style="{StaticResource Block}">
+                            <TextBlock Text="译文语言" Style="{StaticResource SectionTitle}" />
+                            <TextBlock Text="中文（简体）" Foreground="{StaticResource Ink}" />
+                            <TextBlock Style="{StaticResource Hint}" Text="第一版固定译成简体中文。" />
+                        </StackPanel>
+
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ================================ 关于 ================================ -->
+            <TabItem Header="关于">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="18,18,18,8">
+                    <StackPanel>
+                        <TextBlock Text="屏幕划取翻译" FontSize="18" FontWeight="SemiBold"
+                                   Foreground="{StaticResource Ink}" />
+                        <TextBlock x:Name="VersionText" Style="{StaticResource Hint}" Margin="0,6,0,18" />
+
+                        <TextBlock Text="当前进度" Style="{StaticResource SectionTitle}" />
+                        <TextBlock TextWrapping="Wrap" Foreground="{StaticResource Muted}" LineHeight="21">
+                            <Run Text="✅ 阶段 0　托盘、快捷键、单实例、设置、配置加密" /><LineBreak />
+                            <Run Text="⬜ 阶段 1　框选 + 截图" /><LineBreak />
+                            <Run Text="⬜ 阶段 2　文字识别" /><LineBreak />
+                            <Run Text="⬜ 阶段 3　翻译打通" /><LineBreak />
+                            <Run Text="⬜ 阶段 4　打磨" /><LineBreak />
+                            <Run Text="⬜ 阶段 5　可换引擎" />
+                        </TextBlock>
+
+                        <TextBlock Text="文件位置" Style="{StaticResource SectionTitle}" Margin="0,20,0,6" />
+                        <TextBlock x:Name="AboutPathsText" TextWrapping="Wrap" FontSize="11.5"
+                                   Foreground="{StaticResource Muted}" LineHeight="19" />
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+        </TabControl>
+
+        <Border Grid.Row="1" Background="White" BorderBrush="#FFDDE1E8" BorderThickness="0,1,0,0" Padding="14,11">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock x:Name="StatusText" Grid.Column="0" VerticalAlignment="Center"
+                           TextTrimming="CharacterEllipsis" Foreground="{StaticResource Muted}" />
+                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                    <Button Content="保存" Style="{StaticResource PrimaryButton}" Click="SaveButton_Click"
+                            IsDefault="True" />
+                    <Button Content="关闭" Style="{StaticResource MinorButton}" Margin="8,0,0,0"
+                            Click="CloseButton_Click" IsCancel="True" />
+                </StackPanel>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

@@ -1,0 +1,22 @@
+# build output
+bin/
+obj/
+dist/
+
+# the published exe is 71MB of bundled runtime; rebuild it with publish.ps1 instead
+*.exe
+
+# IDE / user-specific
+.vs/
+*.user
+*.suo
+*.userprefs
+
+# never commit these, wherever they might land
+config.json
+selftest.txt
+testkey.txt
+*.log
+
+# The generated icon is a build input and IS committed on purpose
+# (tools/make-icon.ps1 regenerates it).
