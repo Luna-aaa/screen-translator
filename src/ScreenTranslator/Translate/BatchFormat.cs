@@ -63,12 +63,22 @@ internal static class BatchFormat
             if (line.TrimStart().StartsWith("```", StringComparison.Ordinal)) continue;
 
             var match = NumberedLine.Match(line);
-            if (match.Success && int.TryParse(match.Groups[1].Value, out var number)
-                && number >= 1 && number <= expected)
+            if (match.Success && int.TryParse(match.Groups[1].Value, out var number))
             {
+                if (number >= 1 && number <= expected)
+                {
+                    Flush();
+                    current = number - 1;
+                    buffer.Append(match.Groups[2].Value.Trim());
+                    continue;
+                }
+
+                // A number outside the range is still the model numbering something — it
+                // invented an extra block, or restarted its count. Treating it as prose
+                // would glue that text onto the end of whichever block came before, which
+                // is how a stray "[9]" ends up appended to block 1.
                 Flush();
-                current = number - 1;
-                buffer.Append(match.Groups[2].Value.Trim());
+                current = -1;
                 continue;
             }
 

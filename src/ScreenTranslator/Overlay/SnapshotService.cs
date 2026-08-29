@@ -89,7 +89,14 @@ internal sealed class SnapshotService
         var (translator, withImage) = SnapshotPipeline.ChooseTranslator(config);
 
         var result = await SnapshotPipeline
-            .RunAsync(frozen, config, _ocr, translator, withImage, overlay.SetStatus, token)
+            .RunAsync(frozen, config, _ocr, translator, withImage, overlay.SetStatus, token,
+                onPartial: blocks =>
+                {
+                    // Cheap enough to do per batch: drawing forty patches onto a copy of
+                    // the screen measures in tens of milliseconds.
+                    if (token.IsCancellationRequested) return;
+                    overlay.SetPartialPicture(OverlayRenderer.Render(frozen, blocks), blocks);
+                })
             .ConfigureAwait(true);
 
         if (token.IsCancellationRequested || result.Status == SnapshotStatus.Cancelled) return;
@@ -103,10 +110,13 @@ internal sealed class SnapshotService
         var rendered = OverlayRenderer.Render(frozen, result.Blocks);
         overlay.SetResult(rendered, result.Blocks, Paths.ResolveSnapshotDir(config.Snapshot.CaptureDirectory));
 
+        UsageStore.Add(UsageStore.RouteSnapshot, result.PromptTokens, result.CompletionTokens);
+
         var missing = result.Blocks.Count - result.Answered;
         var note = missing > 0 ? $"　·　{missing} 段没翻出来，保留原文" : "";
+        var cost = result.TotalTokens > 0 ? $"　·　{UsageStore.Format(result.TotalTokens)} token" : "";
         overlay.SetStatus(
-            $"整屏翻译完成　·　{result.Answered} 段　·　{sw.ElapsedMilliseconds / 1000.0:0.0} 秒{note}");
+            $"整屏翻译完成　·　{result.Answered} 段　·　{sw.ElapsedMilliseconds / 1000.0:0.0} 秒{cost}{note}");
     }
 
     private static void RestoreForeground(IntPtr hwnd)

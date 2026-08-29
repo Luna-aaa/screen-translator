@@ -94,6 +94,7 @@ internal static class VisionSelfTest
 
         var outcome = await translator.TranslateAsync(probe, progress).ConfigureAwait(false);
 
+        UsageStore.Add(UsageStore.RouteVision, outcome.PromptTokens, outcome.CompletionTokens);
         Line($"状态：{outcome.Status}");
         if (outcome.IsSuccess)
         {

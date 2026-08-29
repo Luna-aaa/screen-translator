@@ -171,10 +171,14 @@ public partial class SettingsWindow : Window
         _loading = true;
         try
         {
+            TargetLanguageCombo.ItemsSource = TargetLanguages.All;
+            TargetLanguageCombo.SelectedItem = TargetLanguages.Find(_working.TargetLanguage);
+
             HotkeyBox.Text = _pendingHotkey.ToString();
             SnapshotHotkeyBox.Text = _pendingSnapshotHotkey?.ToString() ?? "（不用）";
             AutoStartCheck.IsChecked = _working.AutoStart;
             DataDirText.Text = $"配置和日志：{Paths.DataDir}";
+            RefreshUsage();
 
             PipelineCombo.ItemsSource = PipelineOptions;
             PipelineCombo.SelectedItem = PipelineOptions.FirstOrDefault(
@@ -270,6 +274,9 @@ public partial class SettingsWindow : Window
         var candidate = ReadHotkey(e, out var cancelled);
         if (cancelled)
         {
+            TargetLanguageCombo.ItemsSource = TargetLanguages.All;
+            TargetLanguageCombo.SelectedItem = TargetLanguages.Find(_working.TargetLanguage);
+
             HotkeyBox.Text = _pendingHotkey.ToString();
             SetStatus("已取消修改");
             return;
@@ -544,6 +551,24 @@ public partial class SettingsWindow : Window
         SetStatus("保存位置已改，点「保存」生效。");
     }
 
+    private void RefreshUsage_Click(object sender, RoutedEventArgs e) => RefreshUsage();
+
+    private void RefreshUsage()
+    {
+        var (today, recent, requests) = UsageStore.Summary();
+        UsageText.Text = recent == 0
+            ? "还没有统计到用量。"
+            : $"今天 {UsageStore.Format(today)} token　·　最近 30 天 {UsageStore.Format(recent)} token"
+              + $"（{requests} 次请求）";
+    }
+
+    private void ClearUsage_Click(object sender, RoutedEventArgs e)
+    {
+        UsageStore.Clear();
+        RefreshUsage();
+        SetStatus("用量记录已清空。");
+    }
+
     private void OpenDataDir_Click(object sender, RoutedEventArgs e) => OpenFolder(Paths.DataDir);
 
     private void OpenLogDir_Click(object sender, RoutedEventArgs e) => OpenFolder(Paths.LogDir);
@@ -721,6 +746,8 @@ public partial class SettingsWindow : Window
         config.Hotkey = _pendingHotkey.ToString();
         config.OverlayHotkey = _pendingSnapshotHotkey?.ToString() ?? "";
         config.AutoStart = AutoStartCheck.IsChecked == true;
+        config.TargetLanguage = (TargetLanguageCombo.SelectedItem as TargetLanguage)?.Tag
+                                ?? TargetLanguages.Default.Tag;
         config.Pipeline = (PipelineCombo.SelectedItem as PipelineOption)?.Id ?? Pipelines.Classic;
 
         _classic.WriteTo(config.OpenAi);
@@ -757,7 +784,6 @@ public partial class SettingsWindow : Window
         to.AutoStart = from.AutoStart;
         to.OcrSourceLanguage = from.OcrSourceLanguage;
         to.OcrCandidateLanguages = new List<string>(from.OcrCandidateLanguages);
-        to.ActiveTranslator = from.ActiveTranslator;
         to.TargetLanguage = from.TargetLanguage;
         to.Pipeline = from.Pipeline;
         to.OpenAi = from.OpenAi.Clone();

@@ -107,13 +107,17 @@ internal static class SnapshotSelfTest
                 return 1;
             }
 
-            Line($"分段：{result.Blocks.Count} 段，其中 {result.Answered} 段有译文"
-                 + (result.TranslateMs > 0 ? $"　翻译用时 {result.TranslateMs} ms" : ""));
+            UsageStore.Add(UsageStore.RouteSnapshot, result.PromptTokens, result.CompletionTokens);
+
+            Line($"分段：{result.Blocks.Count} 段，分 {result.BatchCount} 批发出，"
+                 + $"其中 {result.Answered} 段有译文"
+                 + (result.TranslateMs > 0 ? $"　翻译用时 {result.TranslateMs} ms" : "")
+                 + (result.TotalTokens > 0 ? $"　{result.PromptTokens}+{result.CompletionTokens} token" : ""));
 
             var blocksPath = Path.Combine(Paths.DataDir, "testsnapshot-blocks.png");
             var renderPath = Path.Combine(Paths.DataDir, "testsnapshot.png");
 
-            using (var boxes = DrawBlockMap(frozen, result.Blocks))
+            using (var boxes = DrawBlockMap(frozen, result.Blocks, result.BatchOfBlock))
             {
                 boxes.Save(blocksPath, ImageFormat.Png);
             }
@@ -133,7 +137,8 @@ internal static class SnapshotSelfTest
             {
                 var block = result.Blocks[i];
                 var b = block.Group.Bounds;
-                Line($"[{i + 1}] ({b.X:F0},{b.Y:F0}) {b.Width:F0}×{b.Height:F0}"
+                Line($"[{i + 1}] 第{(i < result.BatchOfBlock.Count ? result.BatchOfBlock[i] + 1 : 1)}批"
+                     + $"　({b.X:F0},{b.Y:F0}) {b.Width:F0}×{b.Height:F0}"
                      + $"　{block.Group.Lines.Count} 行　行高 {block.Group.LineHeight:F0}px");
                 Line($"    原：{Clip(block.Group.Text)}");
                 Line($"    译：{(block.Translation is null ? "(没翻出来，保留原文)" : Clip(block.Translation))}");
@@ -171,7 +176,22 @@ internal static class SnapshotSelfTest
     /// shows whether line grouping worked: one box around a whole paragraph is right, three
     /// boxes around its three lines means the translation will come back as fragments.
     /// </summary>
-    private static Bitmap DrawBlockMap(Bitmap frozen, IReadOnlyList<RenderBlock> blocks)
+    /// <summary>
+    /// One colour per batch, cycling. Seeing the batches is the point: if a batch's blocks
+    /// are scattered all over the screen, its crop covers the whole desktop and the
+    /// splitting has bought nothing.
+    /// </summary>
+    private static readonly Color[] BatchColors =
+    {
+        Color.FromArgb(220, 255, 90, 90),
+        Color.FromArgb(220, 120, 200, 255),
+        Color.FromArgb(220, 255, 200, 80),
+        Color.FromArgb(220, 140, 240, 150),
+        Color.FromArgb(220, 230, 140, 255),
+    };
+
+    private static Bitmap DrawBlockMap(
+        Bitmap frozen, IReadOnlyList<RenderBlock> blocks, IReadOnlyList<int> batchOfBlock)
     {
         var map = new Bitmap(frozen.Width, frozen.Height, PixelFormat.Format32bppPArgb);
         try
@@ -187,10 +207,11 @@ internal static class SnapshotSelfTest
             using var label = new Font("Consolas", 12f, FontStyle.Bold, GraphicsUnit.Pixel);
             using var labelBack = new SolidBrush(Color.FromArgb(230, 20, 22, 30));
             using var labelInk = new SolidBrush(Color.FromArgb(120, 220, 140));
-            using var edge = new SolidBrush(Color.FromArgb(200, 255, 90, 90));
-
             for (var i = 0; i < blocks.Count; i++)
             {
+                var batch = i < batchOfBlock.Count ? batchOfBlock[i] : 0;
+                using var edge = new SolidBrush(BatchColors[batch % BatchColors.Length]);
+
                 var r = Rectangle.Round(blocks[i].Group.Bounds);
 
                 // FillRectangle, never DrawRectangle: a 1px pen under PixelOffsetMode.Half
@@ -201,7 +222,7 @@ internal static class SnapshotSelfTest
                 g.FillRectangle(edge, r.X, r.Y, 1, r.Height);
                 g.FillRectangle(edge, r.Right - 1, r.Y, 1, r.Height);
 
-                var tag = (i + 1).ToString();
+                var tag = $"{i + 1}/#{batch + 1}";
                 var size = g.MeasureString(tag, label);
                 var box = new Rectangle(r.X, Math.Max(0, r.Y - (int)size.Height - 1),
                     (int)size.Width + 6, (int)size.Height + 2);

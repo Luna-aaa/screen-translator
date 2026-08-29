@@ -34,4 +34,12 @@
     <EmbeddedResource Include="Resources\app.ico" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!--
+      Most of the logic worth testing is internal: it is implementation detail for every
+      caller except the tests. Widening it to public just to test it would be worse.
+    -->
+    <InternalsVisibleTo Include="ScreenTranslator.Tests" />
+  </ItemGroup>
+
 </Project>

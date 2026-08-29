@@ -36,8 +36,19 @@ public sealed class SnapshotResult
     public long OcrMs { get; init; }
     public long TranslateMs { get; init; }
 
+    /// <summary>Tokens across every batch, when the service reported them.</summary>
+    public int PromptTokens { get; init; }
+    public int CompletionTokens { get; init; }
+    public int TotalTokens => PromptTokens + CompletionTokens;
+
     /// <summary>The model's reply verbatim, for the diagnostic report. Empty in the popup path.</summary>
     public string RawReply { get; init; } = "";
+
+    /// <summary>Which batch each block went out in, parallel to <see cref="Blocks"/>. For the block map.</summary>
+    public IReadOnlyList<int> BatchOfBlock { get; init; } = Array.Empty<int>();
+
+    /// <summary>How many requests the screen was split into.</summary>
+    public int BatchCount { get; init; }
 
     public int Answered => Blocks.Count(b => b.Translation is not null);
 
@@ -84,7 +95,8 @@ internal static class SnapshotPipeline
         ITranslator? translator,
         bool withImage,
         Action<string> status,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action<IReadOnlyList<RenderBlock>>? onPartial = null)
     {
         status("正在找出屏幕上的文字…");
 
@@ -136,6 +148,8 @@ internal static class SnapshotPipeline
                 LanguageTag = layout.LanguageTag,
                 OcrMs = layout.ElapsedMs,
                 Message = "空跑：没有联网，译文是按真实长度估算的占位文字。",
+                BatchOfBlock = DryBatchMap(groups.Count),
+                BatchCount = (groups.Count + SnapshotBatching.BlocksPerBatch - 1) / SnapshotBatching.BlocksPerBatch,
             };
         }
 
@@ -150,43 +164,120 @@ internal static class SnapshotPipeline
             };
         }
 
-        status($"找到 {groups.Count} 段，正在翻译…");
+        // Cropped here, on this thread, before anything is dispatched: every batch then
+        // owns its own bitmap and nothing races the overlay repainting the frozen one.
+        var batches = SnapshotBatching.Split(groups, frozen, withImage);
+        status($"找到 {groups.Count} 段，分 {batches.Count} 批翻译…");
 
-        var payload = new TranslationRequest("", layout.LanguageTag, config.TargetLanguage, ExtraPromptFor(config, withImage))
+        var translations = new string?[groups.Count];
+        var batchOf = new int[groups.Count];
+        for (var b = 0; b < batches.Count; b++)
         {
-            Segments = groups.Select(g => g.Text).ToList(),
-            Image = withImage ? frozen : null,
-        };
+            foreach (var index in batches[b].Indexes) batchOf[index] = b;
+        }
 
-        // No streaming: a partial numbered list cannot be placed on screen, and half a
-        // block drawn over its own original would be unreadable rather than reassuring.
-        var outcome = await translator.TranslateAsync(payload, null, cancellationToken).ConfigureAwait(true);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        TranslationOutcome? firstFailure = null;
+        var done = 0;
+        var replies = new string[batches.Count];
+        var promptTokens = 0;
+        var completionTokens = 0;
+
+        try
+        {
+            using var slots = new SemaphoreSlim(SnapshotBatching.MaxParallel);
+            var gate = new object();
+
+            var running = batches.Select(async (batch, order) =>
+            {
+                await slots.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    var outcome = await TranslateBatchAsync(
+                        batch, layout.LanguageTag, config, translator, withImage, cancellationToken)
+                        .ConfigureAwait(false);
+
+                    lock (gate)
+                    {
+                        if (!outcome.IsSuccess) firstFailure ??= outcome;
+                        else replies[order] = outcome.Text;
+
+                        promptTokens += outcome.PromptTokens ?? 0;
+                        completionTokens += outcome.CompletionTokens ?? 0;
+                        done++;
+                    }
+                }
+                finally
+                {
+                    slots.Release();
+                }
+            }).ToList();
+
+            // Progress is reported from the awaiting thread rather than from inside the
+            // tasks, so the caller's callback stays on the UI thread and can repaint.
+            while (running.Count > 0)
+            {
+                var finished = await Task.WhenAny(running).ConfigureAwait(true);
+                running.Remove(finished);
+                if (cancellationToken.IsCancellationRequested) break;
+
+                await finished.ConfigureAwait(true);   // surface any exception
+
+                ApplyReplies(batches, replies, translations);
+                status($"已完成 {done}/{batches.Count} 批…");
+
+                // Redraw with what has arrived so far, so the screen fills in piece by
+                // piece instead of showing one line of status text for ten seconds.
+                onPartial?.Invoke(BuildBlocks(groups, translations));
+            }
+        }
+        catch
+        {
+            foreach (var batch in batches) batch.Dispose();
+            throw;
+        }
+
         if (cancellationToken.IsCancellationRequested)
-            return new SnapshotResult { Status = SnapshotStatus.Cancelled };
-
-        if (!outcome.IsSuccess)
         {
+            foreach (var batch in batches) batch.Dispose();
+            return new SnapshotResult { Status = SnapshotStatus.Cancelled };
+        }
+
+        ApplyReplies(batches, replies, translations);
+
+        // Only a total loss is reported as a failure. If some batches came back, showing
+        // those beats throwing them away over the ones that did not.
+        if (translations.All(t => t is null) && firstFailure is not null)
+        {
+            foreach (var batch in batches) batch.Dispose();
             return new SnapshotResult
             {
                 Status = SnapshotStatus.TranslationFailed,
-                Message = outcome.Message,
+                Message = firstFailure.Message,
                 LanguageTag = layout.LanguageTag,
                 OcrMs = layout.ElapsedMs,
                 UsedVision = withImage,
             };
         }
 
-        var translations = BatchFormat.Parse(outcome.Text, groups.Count);
+        try
+        {
+            await RetryUntranslatedAsync(
+                batches, groups, translations, config, translator, withImage, status, cancellationToken)
+                .ConfigureAwait(true);
+        }
+        finally
+        {
+            // Only now: the retry pass reuses a batch's crop rather than cutting a new
+            // one, so disposing with the parallel loop left it encoding a freed bitmap.
+            foreach (var batch in batches) batch.Dispose();
+        }
 
-        await RetryUntranslatedAsync(
-            groups, translations, config, translator, withImage, frozen, status, cancellationToken)
-            .ConfigureAwait(true);
-
-        var blocks = groups.Select((g, i) => new RenderBlock(g, translations[i])).ToList();
+        var blocks = BuildBlocks(groups, translations);
         var answered = blocks.Count(b => b.Translation is not null);
 
-        Log.Info($"整屏翻译：{groups.Count} 段送出，{answered} 段有译文"
-                 + (outcome.Truncated ? "，回复被截断" : ""));
+        Log.Info($"整屏翻译：{groups.Count} 段送出（{batches.Count} 批），{answered} 段有译文"
+                 + $"，翻译用时 {sw.ElapsedMilliseconds}ms");
 
         return new SnapshotResult
         {
@@ -195,10 +286,78 @@ internal static class SnapshotPipeline
             LanguageTag = layout.LanguageTag,
             UsedVision = withImage,
             OcrMs = layout.ElapsedMs,
-            TranslateMs = outcome.ElapsedMs,
-            RawReply = outcome.Text,
+            TranslateMs = sw.ElapsedMilliseconds,
+            PromptTokens = promptTokens,
+            CompletionTokens = completionTokens,
+            RawReply = string.Join("\n---\n", replies.Where(r => !string.IsNullOrEmpty(r))),
+            BatchOfBlock = batchOf,
+            BatchCount = batches.Count,
         };
     }
+
+    /// <summary>Sends one batch, and retries that batch alone if it comes back unparseable.</summary>
+    private static async Task<TranslationOutcome> TranslateBatchAsync(
+        SnapshotBatch batch,
+        string languageTag,
+        AppConfig config,
+        ITranslator translator,
+        bool withImage,
+        CancellationToken cancellationToken)
+    {
+        var request = new TranslationRequest("", languageTag, config.TargetLanguage, ExtraPromptFor(config, withImage))
+        {
+            Segments = batch.Segments,
+            Image = batch.Image,
+        };
+
+        // No streaming: a partial numbered list cannot be placed on screen, and half a
+        // block drawn over its own original would be unreadable rather than reassuring.
+        var outcome = await translator.TranslateAsync(request, null, cancellationToken).ConfigureAwait(false);
+        if (!outcome.IsSuccess || cancellationToken.IsCancellationRequested) return outcome;
+
+        // A batch that parses to nothing is the failure the old whole-screen request hid:
+        // it looked like success, and the screen simply came back untranslated. Sending
+        // just this batch again is cheap, and usually enough.
+        var parsed = BatchFormat.Parse(outcome.Text, batch.Segments.Count);
+        if (parsed.Any(t => t is not null)) return outcome;
+
+        Log.Warn($"整屏翻译：有一批 {batch.Segments.Count} 段解析不出任何译文，重发这一批。"
+                 + $"模型原话：{Truncate(outcome.Text, 300)}");
+
+        return await translator.TranslateAsync(request with { InsistOnTranslating = true }, null, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>Maps each batch's numbered answers back onto the full block list.</summary>
+    private static void ApplyReplies(
+        IReadOnlyList<SnapshotBatch> batches, IReadOnlyList<string> replies, string?[] translations)
+    {
+        for (var b = 0; b < batches.Count; b++)
+        {
+            var reply = replies[b];
+            if (string.IsNullOrEmpty(reply)) continue;
+
+            var batch = batches[b];
+            var parsed = BatchFormat.Parse(reply, batch.Segments.Count);
+            for (var i = 0; i < batch.Indexes.Count; i++)
+            {
+                if (parsed[i] is not null) translations[batch.Indexes[i]] = parsed[i];
+            }
+        }
+    }
+
+    private static List<RenderBlock> BuildBlocks(IReadOnlyList<TextGroup> groups, string?[] translations) =>
+        groups.Select((g, i) => new RenderBlock(g, translations[i])).ToList();
+
+    private static int[] DryBatchMap(int count)
+    {
+        var map = new int[count];
+        for (var i = 0; i < count; i++) map[i] = i / SnapshotBatching.BlocksPerBatch;
+        return map;
+    }
+
+    private static string Truncate(string value, int max) =>
+        string.IsNullOrEmpty(value) ? "" : value.Length <= max ? value : value[..max] + "…";
 
     /// <summary>
     /// Sends back whatever came home untranslated, once.
@@ -211,12 +370,12 @@ internal static class SnapshotPipeline
     /// only the leftovers.
     /// </summary>
     private static async Task RetryUntranslatedAsync(
+        IReadOnlyList<SnapshotBatch> batches,
         List<TextGroup> groups,
         string?[] translations,
         AppConfig config,
         ITranslator translator,
         bool withImage,
-        Bitmap frozen,
         Action<string> status,
         CancellationToken cancellationToken)
     {
@@ -236,10 +395,16 @@ internal static class SnapshotPipeline
         Log.Info($"整屏翻译：{pending.Count} 段原样返回，重试一次");
         status($"有 {pending.Count} 段没翻过来，正在重试…");
 
+        // Reuses the crop of whichever batch the first pending block came from: the
+        // leftovers are usually neighbours, and it saves cropping the screen again.
+        var image = withImage
+            ? batches.FirstOrDefault(b => b.Indexes.Contains(pending[0]))?.Image
+            : null;
+
         var request = new TranslationRequest("", "", config.TargetLanguage, config.Snapshot.ExtraPrompt)
         {
             Segments = pending.Select(i => groups[i].Text).ToList(),
-            Image = withImage ? frozen : null,
+            Image = image,
             InsistOnTranslating = true,
         };
 

@@ -50,6 +50,9 @@ public partial class ResultWindow : Window
     private string _translationText = "";
     private string _originalText = "";
     private string _sourceLabel = "";
+
+    /// <summary>What the translation came out as, so the header stops claiming "中文" always.</summary>
+    private string _targetLabel = "中文";
     private bool _originalVisible;
     private bool _closing;
     private bool _pinned;
@@ -134,6 +137,9 @@ public partial class ResultWindow : Window
     /// superseding the popup with a new capture.
     /// </summary>
     public bool IsPinned => _pinned;
+
+    /// <summary>Tells the header what language the translation is coming out in.</summary>
+    public void SetTargetLabel(string label) => _targetLabel = label;
 
     public ResultWindow(Bitmap image, Rectangle selection, PopupTheme theme)
     {
@@ -347,7 +353,7 @@ public partial class ResultWindow : Window
         _settled = false;
 
         _sourceLabel = OcrLanguages.DisplayFor(ocr.LanguageTag);
-        StatusText.Text = $"{_sourceLabel} → 中文　·　翻译中…";
+        StatusText.Text = $"{_sourceLabel} → {_targetLabel}　·　翻译中…";
         BodyText.Text = "…";
         BodyText.Foreground = (Brush)FindResource("Muted");
 
@@ -373,7 +379,7 @@ public partial class ResultWindow : Window
         _settled = false;
 
         _sourceLabel = "看图";
-        StatusText.Text = "看图直翻　·　正在读图并翻译…";
+        StatusText.Text = $"看图翻译 → {_targetLabel}　·　正在读图并翻译…";
         BodyText.Text = "…";
         BodyText.Foreground = (Brush)FindResource("Muted");
 
@@ -435,9 +441,18 @@ public partial class ResultWindow : Window
         if (outcome.IsSuccess)
         {
             _translationText = outcome.Text;
+
+            // Spelled out, not abbreviated: "1.2k tok" reads like a word that got cut off,
+            // which is exactly how it was reported. Shown only when the service volunteered
+            // the number — a streamed reply often does not, and "· ? token" would be noise
+            // on a line this narrow.
+            var cost = outcome.TotalTokens is { } tokens
+                ? $"　·　{Infrastructure.UsageStore.Format(tokens)} token"
+                : "";
+
             StatusText.Text = outcome.Truncated
-                ? $"{_sourceLabel} → 中文　·　译文可能不完整"
-                : $"{_sourceLabel} → 中文　·　{outcome.ElapsedMs} ms";
+                ? $"{_sourceLabel} → {_targetLabel}　·　译文可能不完整{cost}"
+                : $"{_sourceLabel} → {_targetLabel}　·　{outcome.ElapsedMs} ms{cost}";
             BodyText.Text = outcome.Text;
             BodyText.Foreground = (Brush)FindResource(outcome.Truncated ? "Warn" : "Ink");
             CopyButton.Visibility = Visibility.Visible;

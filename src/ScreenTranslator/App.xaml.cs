@@ -384,6 +384,7 @@ public partial class App : Application
 
         var window = new ResultWindow(
             image, outcome.ScreenRect, PopupThemes.Find(Config.ActiveRoute.PopupTheme));
+        window.SetTargetLabel(TargetLanguages.Find(Config.TargetLanguage).ShortName);
         window.RetryHandler = () => RunPipelineAsync(window);
         window.ObstaclesProvider = () => PinnedRectsExcept(window);
         window.Closed += (_, _) =>
@@ -509,6 +510,7 @@ public partial class App : Application
         if (window.Lifetime.IsCancellationRequested) return;
         window.SetTranslationResult(result);
 
+        UsageStore.Add(UsageStore.RouteClassic, result.PromptTokens, result.CompletionTokens);
         RememberTranslation(ocr, result);
     }
 
@@ -569,6 +571,7 @@ public partial class App : Application
             window.SetLateOriginal(original);
             window.SetTranslationResult(result);
 
+            UsageStore.Add(UsageStore.RouteVision, result.PromptTokens, result.CompletionTokens);
             RememberVisionTranslation(result, original);
         }
         catch (OperationCanceledException)

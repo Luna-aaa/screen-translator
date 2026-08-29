@@ -72,6 +72,7 @@ internal static class TranslatorSelfTest
 
         var outcome = await translator.TranslateAsync(probe, progress).ConfigureAwait(false);
 
+        UsageStore.Add(UsageStore.RouteClassic, outcome.PromptTokens, outcome.CompletionTokens);
         Line($"状态：{outcome.Status}");
         if (outcome.IsSuccess)
         {

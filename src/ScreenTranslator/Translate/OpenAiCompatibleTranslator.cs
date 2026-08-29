@@ -65,6 +65,26 @@ public sealed class OpenAiCompatibleTranslator : ITranslator, IModelCatalog
     /// <summary>Longest edge of the image actually sent. Ignored in text mode.</summary>
     private readonly int _maxImageEdge;
 
+    /// <summary>
+    /// Which endpoints have rejected which optional field, remembered for the life of the
+    /// process and keyed by address.
+    ///
+    /// Static on purpose. A translator is built fresh for every single translation, so a
+    /// per-instance memory would forget immediately and every translation would pay for
+    /// the same rejected request again — one guaranteed wasted round trip per capture,
+    /// forever, for anyone whose service does not know the field.
+    /// </summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> Unsupported = new();
+
+    private const string FieldStreamUsage = "stream_options";
+    private const string FieldNoThinking = "enable_thinking";
+
+    private bool Supports(string field) => !Unsupported.ContainsKey(Key(field));
+
+    private void MarkUnsupported(string field) => Unsupported.TryAdd(Key(field), 0);
+
+    private string Key(string field) => $"{NormalizeBase(_settings.BaseUrl)}|{_settings.Model}|{field}";
+
     /// <param name="vision">
     /// Whether to put the picture in the message. Comes from the caller rather than from
     /// the settings type, because 全屏翻译 and 看图翻译 are different routes that both send
@@ -278,15 +298,7 @@ public sealed class OpenAiCompatibleTranslator : ITranslator, IModelCatalog
         return sb.ToString();
     }
 
-    private static string DescribeLanguage(string tag) => tag switch
-    {
-        "zh-Hans" or "zh-Hans-CN" or "zh-CN" => "简体中文",
-        "zh-Hant" or "zh-TW" => "繁体中文",
-        "en" or "en-US" => "英文",
-        "ja" or "ja-JP" => "日文",
-        "ko" or "ko-KR" => "韩文",
-        _ => tag,
-    };
+    private static string DescribeLanguage(string tag) => TargetLanguages.Describe(tag);
 
     // ------------------------------------------------------------------- http
 
@@ -314,6 +326,13 @@ public sealed class OpenAiCompatibleTranslator : ITranslator, IModelCatalog
 
         var streaming = onPartial is not null;
 
+        // Streamed replies carry no usage unless asked for, and the flag is not universal:
+        // a service that does not know it can reject the whole request with a 400. So it
+        // goes out optimistically and is dropped on the one error it could have caused —
+        // knowing the token count is never worth losing the translation.
+        var askForUsage = streaming && Supports(FieldStreamUsage);
+        var askNoThinking = Supports(FieldNoThinking);
+
         // Lives outside the try so every failure path can still hand back whatever already
         // arrived. Half a translation the user has been watching appear is worth more than
         // an error message that wipes it off the screen.
@@ -321,51 +340,58 @@ public sealed class OpenAiCompatibleTranslator : ITranslator, IModelCatalog
 
         try
         {
-            object payload = image is null
-                ? new
+            // Built as a dictionary rather than an anonymous type so that optional fields
+            // are simply absent instead of being sent as null. A service that does not
+            // know "stream_options" should never have to see it at all.
+            var payload = new Dictionary<string, object?>
+            {
+                ["model"] = _settings.Model,
+                ["temperature"] = 0.2,
+                ["stream"] = streaming,
+            };
+
+            payload["messages"] = image is null
+                ? new object[]
                 {
-                    model = _settings.Model,
-                    messages = new[]
-                    {
-                        new { role = "system", content = systemPrompt },
-                        new { role = "user", content = userText },
-                    },
-                    temperature = 0.2,
-                    stream = streaming,
+                    new { role = "system", content = systemPrompt },
+                    new { role = "user", content = userText },
                 }
-                : new
+                : new object[]
                 {
-                    model = _settings.Model,
-                    messages = new object[]
+                    new
                     {
-                        new
+                        role = "user",
+                        content = new object[]
                         {
-                            role = "user",
-                            content = new object[]
+                            new { type = "image_url", image_url = new { url = image.DataUri } },
+                            new
                             {
-                                new { type = "image_url", image_url = new { url = image.DataUri } },
-                                new
-                                {
-                                    type = "text",
-                                    // One text part, not two: a vision message that also
-                                    // carried a system role is accepted by some services
-                                    // and rejected by others, so the instructions and the
-                                    // payload travel together.
-                                    text = userText.Length == 0
-                                        ? systemPrompt
-                                        : systemPrompt + "\n\n" + userText,
-                                },
+                                type = "text",
+                                // One text part, not two: a vision message that also
+                                // carried a system role is accepted by some services and
+                                // rejected by others, so the instructions and the payload
+                                // travel together.
+                                text = userText.Length == 0
+                                    ? systemPrompt
+                                    : systemPrompt + "\n\n" + userText,
                             },
                         },
                     },
-                    temperature = 0.2,
-                    stream = streaming,
                 };
+
+            if (askForUsage) payload["stream_options"] = new { include_usage = true };
+
+            // Reasoning models spend most of their time thinking, and thinking does not
+            // get shorter when the answer does: one measured batch produced 188 characters
+            // after burning 3595 completion tokens, and took 42 seconds. Translation does
+            // not benefit from deliberation, so it is switched off where the vendor
+            // supports the switch — and dropped again if the vendor rejects the field.
+            if (askNoThinking) payload["enable_thinking"] = false;
 
             using var message = new HttpRequestMessage(HttpMethod.Post, uri);
             message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
             message.Content = new StringContent(
-                JsonSerializer.Serialize(payload, payload.GetType()), Encoding.UTF8, "application/json");
+                JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
 
             // ResponseHeadersRead is what makes a stream actually stream: the default waits
             // for the entire body before returning, which would defeat the whole point.
@@ -377,6 +403,27 @@ public sealed class OpenAiCompatibleTranslator : ITranslator, IModelCatalog
             if (!response.IsSuccessStatusCode)
             {
                 var errorBody = await response.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false);
+
+                // Both extras are optional niceties, and a 400 is the one error they could
+                // have caused. They are dropped one at a time and the request goes out
+                // again; neither is ever worth losing a translation over.
+                if (response.StatusCode == HttpStatusCode.BadRequest && (askNoThinking || askForUsage))
+                {
+                    if (askNoThinking)
+                    {
+                        MarkUnsupported(FieldNoThinking);
+                        Log.Info($"{_settings.Model} 不认识 enable_thinking，去掉它重发一次（以后不再带）");
+                    }
+                    else
+                    {
+                        MarkUnsupported(FieldStreamUsage);
+                        Log.Info($"{_settings.Model} 不认识 stream_options，改成不要 token 用量后重发一次（以后不再带）");
+                    }
+
+                    return await SendAsync(systemPrompt, userText, onPartial, cancellationToken, image)
+                        .ConfigureAwait(false);
+                }
+
                 return MapHttpError(response.StatusCode, errorBody);
             }
 
@@ -393,6 +440,7 @@ public sealed class OpenAiCompatibleTranslator : ITranslator, IModelCatalog
 
             var body = await response.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false);
 
+            var usage = ExtractUsage(body);
             var text = ExtractContent(body);
             if (text is null)
             {
@@ -409,8 +457,8 @@ public sealed class OpenAiCompatibleTranslator : ITranslator, IModelCatalog
             // identical either way and never has to ask whether streaming happened.
             onPartial?.Report(text);
 
-            Log.Info($"翻译成功，{text.Length} 字，用时 {sw.ElapsedMilliseconds}ms");
-            return TranslationOutcome.Success(text, sw.ElapsedMilliseconds);
+            Log.Info($"翻译成功，{text.Length} 字，用时 {sw.ElapsedMilliseconds}ms{DescribeUsage(usage)}");
+            return TranslationOutcome.Success(text, sw.ElapsedMilliseconds, usage: usage);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -466,6 +514,7 @@ public sealed class OpenAiCompatibleTranslator : ITranslator, IModelCatalog
         var truncated = false;
         var sawDone = false;
         var chunks = 0;
+        var usage = default(TokenUsage);
 
         var stream = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
         await using (stream.ConfigureAwait(false))
@@ -490,6 +539,9 @@ public sealed class OpenAiCompatibleTranslator : ITranslator, IModelCatalog
                 if (chunk.Length == 0) continue;
                 if (chunk == "[DONE]") { sawDone = true; break; }
 
+                // The usage-bearing chunk arrives last and has no content of its own.
+                if (ReadUsage(chunk) is { HasValue: true } chunkUsage) usage = chunkUsage;
+
                 var (delta, finishReason) = ReadStreamChunk(chunk);
                 if (string.Equals(finishReason, "length", StringComparison.OrdinalIgnoreCase)) truncated = true;
                 if (string.IsNullOrEmpty(delta)) continue;
@@ -513,8 +565,8 @@ public sealed class OpenAiCompatibleTranslator : ITranslator, IModelCatalog
         if (!sawDone) Log.Warn("流式响应没有收到结束标记就断开了");
 
         Log.Info($"翻译成功（流式），{text.Length} 字 / {chunks} 段，用时 {sw.ElapsedMilliseconds}ms"
-                 + (truncated ? "，被模型的输出长度上限截断" : ""));
-        return TranslationOutcome.Success(text, sw.ElapsedMilliseconds, truncated);
+                 + (truncated ? "，被模型的输出长度上限截断" : "") + DescribeUsage(usage));
+        return TranslationOutcome.Success(text, sw.ElapsedMilliseconds, truncated, usage);
     }
 
     /// <summary>Pulls the incremental text out of one streamed chunk. Never throws.</summary>
@@ -787,6 +839,51 @@ public sealed class OpenAiCompatibleTranslator : ITranslator, IModelCatalog
 
         return sb.Length == 0 ? null : sb.ToString();
     }
+
+    /// <summary>Reads the usage block from a whole response body. Absent is normal.</summary>
+    private static TokenUsage ExtractUsage(string body)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            return ReadUsageElement(document.RootElement);
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException)
+        {
+            return default;
+        }
+    }
+
+    /// <summary>Same, for one streamed chunk — the last one usually carries it.</summary>
+    private static TokenUsage ReadUsage(string json)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            return ReadUsageElement(document.RootElement);
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException)
+        {
+            return default;
+        }
+    }
+
+    private static TokenUsage ReadUsageElement(JsonElement root)
+    {
+        if (root.ValueKind != JsonValueKind.Object) return default;
+        if (!root.TryGetProperty("usage", out var usage) || usage.ValueKind != JsonValueKind.Object)
+            return default;
+
+        return new TokenUsage(Read("prompt_tokens"), Read("completion_tokens"));
+
+        int? Read(string name) =>
+            usage.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number
+                ? value.GetInt32()
+                : null;
+    }
+
+    private static string DescribeUsage(TokenUsage usage) =>
+        usage.HasValue ? $"，{usage.PromptTokens ?? 0}+{usage.CompletionTokens ?? 0} token" : "";
 
     private static string? ExtractErrorMessage(string body)
     {

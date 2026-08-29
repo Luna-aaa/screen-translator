@@ -42,6 +42,7 @@ dotnet build src\ScreenTranslator\ScreenTranslator.csproj -c Debug   # 构建
 
 ```powershell
 .\dist\ScreenTranslator.exe --testclipboard [要复制的内容]   # 复制是否成功 + 耗时，报告见 testclipboard.txt
+dotnet test                                          # 纯逻辑单元测试，不联网不花钱
 ```
 
 `--testclipboard` 单独跑只能测空闲情况；**要复现真实问题，得让另一个进程同时占住剪贴板**
@@ -94,7 +95,8 @@ src/ScreenTranslator/
   Capture/             冻屏、遮罩、框选、裁剪、对齐自检
   Ocr/                 IOcrProvider + Windows OCR + 语言包检测 + 自动语种打分
   Translate/           ITranslator + OpenAI 兼容适配器（文字 / 看图两用）+ 图片编码 + 模型列表 + 两个自检
-  Overlay/             整屏快照：OCR 出坐标 → 行合并成段 → 整批编号翻译 → 画回原位 → 全屏窗口
+  Overlay/             整屏快照：OCR 出坐标 → 行合并成段 → 分批并行翻译 → 画回原位 → 全屏窗口
+tests/ScreenTranslator.Tests/   纯逻辑单元测试（xunit，只测能离线跑的纯函数）
   UI/                  设置窗、结果小窗、历史窗、配色方案、弹窗定位与避让、关闭监视
   History/             最近的翻译记录（内存 + history.json）
   Config/              AppConfig、三条路的 RouteSettings、服务预设、JSON 存取、DPAPI 加密
@@ -136,6 +138,12 @@ src/ScreenTranslator/
 故意保留。** 小窗需要「复制选中」按钮，纯粹是因为它拿不到键盘焦点——别把这条限制
 照抄到别的窗口上。历史窗口里那个按钮靠 `GotKeyboardFocus` 记住最后聚焦的文本框，
 因为点按钮的瞬间焦点就跑到按钮上了，但选区还在。
+
+**小窗那行状态文字开着 `TextTrimming="CharacterEllipsis"`，往里加东西会把尾巴挤掉。**
+它一行要放「源语言 → 译文语言　·　耗时　·　token」，而窗口很窄。所以：
+译文语言在这里用 `TargetLanguage.ShortName`（中文 / 繁中 / 英文…），
+不用设置页那个 `DisplayName`（中文（简体））；单位写全 `token`，不写 `tok`。
+**缩写出现在一行会被截断的文字里，看起来就是个 bug** —— 用户正是这么报上来的。
 
 **小窗配色全部走 `DynamicResource`。** `StaticResource` 在加载时就把颜色定死了，
 换不掉；主题是在构造函数里把 `Resources[key]` 整批替掉的（`ApplyTheme`）。
@@ -238,6 +246,35 @@ Office）短暂占用时 flush 抛 `CLIPBRD_E_CANT_OPEN`——**内容其实已�
 标记是一个分片一个分片到的（`==`、`===ORIG`），直接 IndexOf 会让这些字符在译文尾巴上闪一下。
 开关是 `VisionSettings.IncludeOriginal`，默认开，多花一点输出 token。
 
+**整屏是分批并行发的，不是一个大请求。** 每批 12 段、最多 3 批同时在飞，
+**每批只裁自己那一片屏幕当图片**（`SnapshotBatching.Split`）。三重收益：省（总像素少于
+一整屏）、准（局部图有效分辨率更高）、稳（一次只让模型编号 12 个，格式遵守率高得多）。
+顺带根治了一个崩溃：以前把同一张 `frozen` 位图既交给覆盖窗口画、又交给后台线程编码，
+GDI+ 不是线程安全的，抛 `Object is currently in use elsewhere`（真实使用中一天崩 4 次）。
+现在每批持有自己独占的裁图，**没有共享就没有竞争**。
+
+**批次的 `Dispose` 必须晚于重试。** 重试复用某一批的裁图而不是重新裁，
+把 dispose 放在并行循环的 `finally` 里就会让重试去编码一张已经释放的位图——
+这个 bug 是 `--testsnapshot` 当场抓出来的。
+
+**会「思考」的模型是整屏慢的真正原因，不是批次大小。** 实测 `qwen3.8-flash`：
+一批输出 188 字却烧了 3595 个 completion token，耗时 42 秒；关掉思考后同样的活
+**139 秒 → 12 秒，输出 token 少了 9 倍**，而且译文质量和纠错能力没有损失
+（`端凵`→`端口`、`资源眚理器`→`资源管理器` 照样纠对）。所以请求里带
+`enable_thinking: false`。**当初"拆小批就快"的假设是错的**——思考时间不随输出变短。
+
+**可选字段一律「乐观发送 + 一次性降级」，而且降级要记在静态表里。**
+`enable_thinking` 和 `stream_options` 都不是所有服务商都认识，不认识的会直接 400。
+做法：带上发 → 收到 400 就去掉重发一次 → **把「这个地址+模型不支持这个字段」记进
+`OpenAiCompatibleTranslator.Unsupported`（static）**。
+必须是 static：翻译器每次翻译都新建实例，实例级的记忆等于没记，
+**每翻一次都要白白多发一次注定失败的请求**。
+原则不变：**知道 token 用量、让模型别思考，都不值得让翻译本身失败。**
+
+**payload 用字典拼，不用匿名类型。** 匿名类型里写 `x = cond ? v : null` 会把
+`"x": null` 真的发出去；不认识这个字段的服务商看到 null 一样可能出问题。
+字典可以「没有就不加这个键」。
+
 **整屏翻译要对「原样退回」的段落自动重试一次。** 模型会把短的外文标签当成专有名词原样吐回来，
 表现就是一屏中文里夹着几行没翻的英文/日文——这个功能看起来坏掉的第一大原因。
 `SnapshotPipeline.RetryUntranslatedAsync` 挑出「译文和原文一模一样、且原文含两个以上外文字母」
@@ -310,6 +347,16 @@ SHGetKnownFolderPath）。想让程序读别处的配置来做沙箱测试，这
 一次翻译失败的形式暴露出来，中间没有任何提示。全局 `ComboBox` 样式里拦掉 `PreviewMouseWheel`，
 并把事件重新抛给父级 ScrollViewer，否则页面会在指针经过下拉框时卡住不滚。
 
+**有单元测试了，但只覆盖能离线跑的纯函数。** `tests/ScreenTranslator.Tests/`，xunit，
+`dotnet test` 几十毫秒跑完，不联网不花钱。覆盖：编号解析、原文切分、行合并成段、
+图片缩放决策、语种打分、译文语言映射。
+主项目靠 `InternalsVisibleTo` 开放 internal——这些东西对除测试外的任何调用方都是实现细节，
+为了测试改成 public 更糟。
+**发布产物不受影响**：`publish.ps1` 显式指定主项目，xunit 进不了那个 71MB 的 exe
+（验证过 dist 里只有 ScreenTranslator.exe）。所以"零 NuGet 依赖"这句现在特指**发布产物**。
+写完第一次跑就抓到一个真 bug：越界的编号（只发了 2 段却回了 `[9]`）会被当成上一段的续写，
+把垃圾接到第 1 段后面。**改的是解析器，不是测试。**
+
 **测试用的本地 HTTP 桩要用 `TcpListener`，不能用 `HttpListener`** —— 后者在 Windows 上
 需要 URL ACL 预留（即管理员），不提权时静默失败。
 
@@ -373,12 +420,13 @@ Esc/点别处关闭。场景是游戏对话、PDF、图片、网页、视频字�
 | 6 | 整屏原位覆盖：OCR 只出坐标 + 多模态出译文，把译文画回原文位置（翻译快照） | ✅ 用户验证通过 |
 | 6.1 | 三条路设置拆分、快照里框选复制 / 复制原文 / 保存图片、下拉框滚轮修复 | ✅ 用户验证通过 |
 | 6.2 | 剪贴板误报失败、看图翻译补上原文、整屏漏翻自动重试 | ✅ 用户验证通过 |
+| 6.3 | 整屏分批并行提速（139s→12s）、译文语言可选、token 用量可见、纯逻辑单元测试 | ✅ 用户验证通过 |
 
 **设置窗的五页**（用户定的结构）：
 
 | 页 | 内容 |
 |---|---|
-| 通用 | 框选翻译快捷键、全屏翻译快捷键、开机自启、文件位置 |
+| 通用 | 译文语言、框选翻译快捷键、全屏翻译快捷键、开机自启、用量统计、文件位置 |
 | 框选翻译 | 顶上「翻译方式」开关；下面**左右两栏**「识文翻译」\|「看图翻译」，每栏一整套；底下是共用的历史查看/清空 |
 | 全屏翻译 | 自己一整套服务设置 + 图片保存位置 |
 | 文字识别 | 源语言、候选语言、语言包安装（识文翻译和全屏翻译都会用到） |
@@ -387,6 +435,14 @@ Esc/点别处关闭。场景是游戏对话、PDF、图片、网页、视频字�
 **加一个新设置项的正确姿势**：加在 `RouteSettings` / `PopupRouteSettings` 基类上 → 在
 `CopyBaseInto` / `CopyPopupInto` 里带上 → 在 `RoutePanel` 里加控件引用和 Load/Validate/WriteTo。
 `AppConfig.Clone` 和 `SettingsWindow.CopyInto` 只处理顶层字段，路由内部的由 `Clone()` 负责。
+
+`TargetLanguage` 是全局一份（三条路共用），选项和提示词里的语言名都在
+`Config/TargetLanguages.cs`，**别再往提示词里塞第二份 switch**。
+死字段 `ActiveTranslator` 已删——它从来没有被任何代码消费过，改成任何值都毫无效果。
+
+用量统计存 `%APPDATA%\ScreenTranslator\usage.json`，按「日期 + 路线」累加，保留 30 天。
+**只记 token，不折算成钱**：单价随模型和服务商变，写死一个价目表迟早给出错误的数字。
+诊断命令的花费也算进去——它们同样在真花钱。
 
 截图目录：框选 → `D:\ScreenTranslator\框选翻译`（旧的 `Captures` 会在启动时自动改名，
 只在「旧的在、新的不在」时才动手，失败只记日志），全屏 → `D:\ScreenTranslator\全屏翻译`
@@ -412,7 +468,8 @@ Esc/点别处关闭。场景是游戏对话、PDF、图片、网页、视频字�
 托盘「最近的翻译」子菜单弹 .NET 错误框、小窗里的字选不中、四方箭头在小窗内部也出现、
 **复制时卡好几秒并误报「剪贴板被占用」（其实已经复制成功）**、
 **鼠标滚轮划过下拉框会静默改掉模型**、**看图翻译没有原文可显示 / 可复制**、
-**整屏翻译漏翻个别英文和日文段落**。
+**整屏翻译漏翻个别英文和日文段落**、**整屏翻译报「出错了」**（GDI+ 位图跨线程）、
+**小窗状态行末尾的 token 单位被截断成半个词**。
 
 完整方案见 `docs/PLAN.md`（原件在 `C:\Users\M\.claude\plans\synthetic-leaping-finch.md`）。
 
@@ -425,5 +482,8 @@ Esc/点别处关闭。场景是游戏对话、PDF、图片、网页、视频字�
 4. **全屏独占游戏**——BitBlt 会截到黑屏，置顶小窗也可能被吃掉，需要换 Windows.Graphics.Capture。
 5. **整屏覆盖的排版**（`Overlay/OverlayRenderer.cs`）——译文长度、底衬盖不干净、分栏和表格
    还原不了，这三样是问题本身的性质，不是 bug。要调先跑 `--testsnapshot --dry` 看图。
-6. **行合并成段落**（`Overlay/TextGrouping.cs`）——三个阈值（行距 / 高度比 / 水平重叠）是拍
+6. **模型是不是「会思考」的那种**——这一条比任何代码优化都重要。同一台机器、同一屏内容，
+   开思考 139 秒、关思考 12 秒。换模型后如果整屏突然变慢，先看日志里的 completion token
+   是不是远大于译文字数。
+7. **行合并成段落**（`Overlay/TextGrouping.cs`）——三个阈值（行距 / 高度比 / 水平重叠）是拍
    出来的，换一种排版可能就要重调。blocks 图里「一段一个框」才对。

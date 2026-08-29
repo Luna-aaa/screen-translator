@@ -43,9 +43,6 @@ public sealed class AppConfig
     public List<string> OcrCandidateLanguages { get; set; } = new() { "en-US", "ja-JP" };
 
     // ---- routes -----------------------------------------------------------
-    /// <summary>Id of the active <c>ITranslator</c> implementation.</summary>
-    public string ActiveTranslator { get; set; } = OpenAiSettings.TranslatorId;
-
     /// <summary>
     /// Which route 框选翻译 takes: <see cref="Pipelines.Classic"/> (OCR then translate) or
     /// <see cref="Pipelines.Vision"/> (send the picture itself). Does not affect 全屏翻译,
@@ -62,7 +59,10 @@ public sealed class AppConfig
     /// <summary>全屏翻译.</summary>
     public SnapshotSettings Snapshot { get; set; } = new();
 
-    /// <summary>Target language for every route. Fixed to Simplified Chinese for v1.</summary>
+    /// <summary>
+    /// What everything gets translated into. One setting for all three routes: the answer
+    /// to "what language do I read" does not change depending on how the text was captured.
+    /// </summary>
     public string TargetLanguage { get; set; } = "zh-Hans";
 
     /// <summary>
@@ -92,7 +92,6 @@ public sealed class AppConfig
         AutoStart = AutoStart,
         OcrSourceLanguage = OcrSourceLanguage,
         OcrCandidateLanguages = new List<string>(OcrCandidateLanguages),
-        ActiveTranslator = ActiveTranslator,
         Pipeline = Pipeline,
         OpenAi = OpenAi.Clone(),
         Vision = Vision.Clone(),

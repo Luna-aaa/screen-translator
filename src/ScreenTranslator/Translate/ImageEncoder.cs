@@ -76,7 +76,7 @@ internal static class ImageEncoder
     /// Shrinking wins over enlarging when both apply — an image can be both very wide and
     /// very short, and blowing it up to fix the height would blow the width past the cap.
     /// </summary>
-    private static double ScaleFor(int width, int height, int maxEdge)
+    internal static double ScaleFor(int width, int height, int maxEdge)
     {
         var longEdge = Math.Max(width, height);
         if (longEdge > maxEdge) return (double)maxEdge / longEdge;

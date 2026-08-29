@@ -169,6 +169,21 @@ internal sealed class SnapshotOverlay : Form
         Invalidate();
     }
 
+    /// <summary>
+    /// Swaps in a partly-finished picture while batches are still arriving.
+    ///
+    /// Deliberately not <see cref="SetResult"/>: that one also resets the buttons, the
+    /// hint and the selection, which would yank the ground out from under a user who has
+    /// already started reading or dragging while the rest loads.
+    /// </summary>
+    public void SetPartialPicture(Bitmap picture, IReadOnlyList<RenderBlock> blocks)
+    {
+        _translated?.Dispose();
+        _translated = picture;
+        _blocks = blocks;
+        Invalidate();
+    }
+
     /// <summary>Reports a failure without closing: the frozen screen stays up so nothing is lost.</summary>
     public void SetFailure(string message)
     {

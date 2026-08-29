@@ -144,8 +144,7 @@ public static class ConfigStore
         // Blank here is meaningful (the snapshot hotkey is switched off), so unlike the
         // capture hotkey it is normalised to empty rather than back to a default.
         cfg.OverlayHotkey = (cfg.OverlayHotkey ?? "").Trim();
-        if (string.IsNullOrWhiteSpace(cfg.TargetLanguage)) cfg.TargetLanguage = "zh-Hans";
-        if (string.IsNullOrWhiteSpace(cfg.ActiveTranslator)) cfg.ActiveTranslator = OpenAiSettings.TranslatorId;
+        if (!TargetLanguages.IsKnown(cfg.TargetLanguage)) cfg.TargetLanguage = TargetLanguages.Default.Tag;
         if (string.IsNullOrWhiteSpace(cfg.OcrSourceLanguage)) cfg.OcrSourceLanguage = "auto";
 
         // An unrecognised value falls back to the route that always works rather than

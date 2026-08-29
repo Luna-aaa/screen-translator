@@ -1,5 +1,13 @@
 namespace ScreenTranslator.Translate;
 
+/// <summary>What one request cost, as reported by the service. Default means "not reported".</summary>
+public readonly record struct TokenUsage(int? PromptTokens, int? CompletionTokens)
+{
+    public bool HasValue => PromptTokens is not null || CompletionTokens is not null;
+
+    public int Total => (PromptTokens ?? 0) + (CompletionTokens ?? 0);
+}
+
 /// <summary>
 /// Why a translation did not happen. The point of splitting these out is that the popup
 /// must never show "未知错误" — every failure the user can actually cause (wrong key,
@@ -44,6 +52,18 @@ public sealed class TranslationOutcome
     public long ElapsedMs { get; private init; }
 
     /// <summary>
+    /// What the service said this cost, when it said anything. Null is common and normal:
+    /// a streamed reply only carries usage if the service was asked for it and agreed.
+    /// </summary>
+    public int? PromptTokens { get; private init; }
+
+    public int? CompletionTokens { get; private init; }
+
+    public int? TotalTokens => PromptTokens is null && CompletionTokens is null
+        ? null
+        : (PromptTokens ?? 0) + (CompletionTokens ?? 0);
+
+    /// <summary>
     /// The text is usable but known to be incomplete — the model hit its output limit, or
     /// a streamed response ended early. Saying so matters: a translation that stops
     /// mid-sentence otherwise looks like the model's own (wrong) answer.
@@ -52,12 +72,15 @@ public sealed class TranslationOutcome
 
     public bool IsSuccess => Status == TranslationStatus.Success;
 
-    public static TranslationOutcome Success(string text, long elapsedMs, bool truncated = false) => new()
+    public static TranslationOutcome Success(
+        string text, long elapsedMs, bool truncated = false, TokenUsage usage = default) => new()
     {
         Status = TranslationStatus.Success,
         Text = text,
         ElapsedMs = elapsedMs,
         Truncated = truncated,
+        PromptTokens = usage.PromptTokens,
+        CompletionTokens = usage.CompletionTokens,
     };
 
     /// <summary>
@@ -72,6 +95,8 @@ public sealed class TranslationOutcome
         Detail = Detail,
         ElapsedMs = ElapsedMs,
         Truncated = Truncated,
+        PromptTokens = PromptTokens,
+        CompletionTokens = CompletionTokens,
     };
 
     public static TranslationOutcome Error(TranslationStatus status, string message, string? detail = null) => new()

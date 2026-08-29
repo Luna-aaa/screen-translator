@@ -124,6 +124,13 @@
                     <StackPanel>
 
                         <StackPanel Style="{StaticResource Block}">
+                            <TextBlock Text="译文语言" Style="{StaticResource SectionTitle}" />
+                            <ComboBox x:Name="TargetLanguageCombo" Width="220" HorizontalAlignment="Left" />
+                            <TextBlock Style="{StaticResource Hint}"
+                                       Text="三条路共用这一个设置——不管文字是怎么抓来的，你想读哪种语言是同一个答案。改完下次翻译就生效。" />
+                        </StackPanel>
+
+                        <StackPanel Style="{StaticResource Block}">
                             <TextBlock Text="框选翻译快捷键" Style="{StaticResource SectionTitle}" />
                             <Grid>
                                 <Grid.ColumnDefinitions>
@@ -174,6 +181,19 @@
                             <CheckBox x:Name="AutoStartCheck" Content="开机时自动启动" />
                             <TextBlock Style="{StaticResource Hint}"
                                        Text="通过当前用户的注册表启动项实现，不需要管理员权限。程序换位置后重新勾选一次即可。" />
+                        </StackPanel>
+
+                        <StackPanel Style="{StaticResource Block}">
+                            <TextBlock Text="用量" Style="{StaticResource SectionTitle}" />
+                            <TextBlock x:Name="UsageText" Foreground="{StaticResource Ink}" />
+                            <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                <Button Content="刷新" MinWidth="60" Style="{StaticResource MinorButton}"
+                                        Click="RefreshUsage_Click" />
+                                <Button Content="清空记录" Style="{StaticResource MinorButton}"
+                                        Margin="8,0,0,0" Click="ClearUsage_Click" />
+                            </StackPanel>
+                            <TextBlock Style="{StaticResource Hint}"
+                                       Text="只统计 token，不折算成钱——单价随模型和服务商变，程序里写死一个价目表迟早给出错误的数字。具体费用看服务商的账单页。有些服务在流式模式下不报用量，那样这里就统计不到。" />
                         </StackPanel>
 
                         <StackPanel Style="{StaticResource Block}">
@@ -541,12 +561,6 @@
                                 <StackPanel x:Name="LanguagePackPanel" />
                             </Border>
                             <TextBlock x:Name="LanguagePackHint" Style="{StaticResource Hint}" />
-                        </StackPanel>
-
-                        <StackPanel Style="{StaticResource Block}">
-                            <TextBlock Text="译文语言" Style="{StaticResource SectionTitle}" />
-                            <TextBlock Text="中文（简体）" Foreground="{StaticResource Ink}" />
-                            <TextBlock Style="{StaticResource Hint}" Text="第一版固定译成简体中文。" />
                         </StackPanel>
 
                     </StackPanel>
