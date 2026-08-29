@@ -60,6 +60,20 @@ public sealed class TranslationOutcome
         Truncated = truncated,
     };
 
+    /// <summary>
+    /// The same outcome with different text, for a caller that had to split the reply
+    /// apart after the fact. Keeps the timing and truncation flag, which the popup shows.
+    /// </summary>
+    public TranslationOutcome WithText(string text) => new()
+    {
+        Status = Status,
+        Text = text,
+        Message = Message,
+        Detail = Detail,
+        ElapsedMs = ElapsedMs,
+        Truncated = Truncated,
+    };
+
     public static TranslationOutcome Error(TranslationStatus status, string message, string? detail = null) => new()
     {
         Status = status,

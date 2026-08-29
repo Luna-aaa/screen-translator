@@ -18,12 +18,14 @@ public sealed class TrayIconHost : IDisposable
 
     private readonly NotifyIcon _notifyIcon;
     private readonly ToolStripMenuItem _captureItem;
+    private readonly ToolStripMenuItem _snapshotItem;
     private readonly ToolStripMenuItem _autoStartItem;
     private readonly ToolStripMenuItem _historyItem;
     private Icon? _ownedIcon;
     private bool _suppressAutoStartEvent;
 
     public event Action? CaptureRequested;
+    public event Action? SnapshotRequested;
     public event Action? SettingsRequested;
     public event Action<bool>? AutoStartToggled;
     public event Action? ExitRequested;
@@ -40,6 +42,11 @@ public sealed class TrayIconHost : IDisposable
         {
             Font = new Font(SystemFonts.MenuFont ?? SystemFonts.DefaultFont, FontStyle.Bold),
         };
+
+        // Given its own menu entry, not just a hotkey: the hotkey can be switched off or
+        // lost to another program, and a feature reachable only by a key nobody can find
+        // may as well not exist.
+        _snapshotItem = new ToolStripMenuItem("整屏翻译", null, (_, _) => SnapshotRequested?.Invoke());
 
         _autoStartItem = new ToolStripMenuItem("开机自动启动") { CheckOnClick = true };
         _autoStartItem.CheckedChanged += (_, _) =>
@@ -60,6 +67,7 @@ public sealed class TrayIconHost : IDisposable
 
         var menu = new ContextMenuStrip { ShowImageMargin = false, ShowCheckMargin = true };
         menu.Items.Add(_captureItem);
+        menu.Items.Add(_snapshotItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(_historyItem);
         menu.Items.Add(new ToolStripSeparator());
@@ -129,6 +137,12 @@ public sealed class TrayIconHost : IDisposable
         static string Clip(string text) => text.Length <= 300 ? text : text[..300] + "…";
 
         return $"{record.Time:MM-dd HH:mm}\n\n{Clip(record.Translation)}\n\n—— 原文 ——\n{Clip(record.Original)}";
+    }
+
+    /// <summary>Shows which key runs the whole-screen snapshot, or nothing when it is off.</summary>
+    public void SetSnapshotHotkeyHint(string? hotkeyText)
+    {
+        _snapshotItem.Text = string.IsNullOrWhiteSpace(hotkeyText) ? "整屏翻译" : $"整屏翻译    {hotkeyText}";
     }
 
     public void SetHotkeyHint(string? hotkeyText)

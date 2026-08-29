@@ -40,10 +40,10 @@ internal static class TranslatorSelfTest
         Line($"接口地址：{(string.IsNullOrWhiteSpace(settings.BaseUrl) ? "(空)" : settings.BaseUrl)}");
         Line($"模型：{(string.IsNullOrWhiteSpace(settings.Model) ? "(空)" : settings.Model)}");
         Line($"API Key：{(settings.HasKey ? "已配置" : "未配置")}");
-        Line($"超时：{config.RequestTimeoutSeconds} 秒");
+        Line($"超时：{settings.TimeoutSeconds} 秒");
         Line("");
 
-        var translator = new OpenAiCompatibleTranslator(settings, config.RequestTimeoutSeconds);
+        var translator = new OpenAiCompatibleTranslator(settings, vision: false);
 
         if (!translator.IsConfigured)
         {

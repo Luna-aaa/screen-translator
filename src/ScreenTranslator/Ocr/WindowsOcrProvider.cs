@@ -17,7 +17,7 @@ namespace ScreenTranslator.Ocr;
 /// installed, and it cannot detect which language it is looking at — see
 /// <see cref="LanguageScorer"/> for how "auto" is resolved.
 /// </summary>
-public sealed class WindowsOcrProvider : IOcrProvider
+public sealed class WindowsOcrProvider : IOcrProvider, IOcrLayoutProvider
 {
     public string Id => "windows";
     public string DisplayName => "Windows 内置识别";
@@ -53,7 +53,8 @@ public sealed class WindowsOcrProvider : IOcrProvider
                 return OcrOutcome.MissingLanguagePack(missing);
             }
 
-            using var softwareBitmap = await ToSoftwareBitmapAsync(image).ConfigureAwait(true);
+            var (softwareBitmap, _) = await ToSoftwareBitmapAsync(image).ConfigureAwait(true);
+            using var _owned = softwareBitmap;
 
             string bestText = "";
             string bestTag = usable[0];
@@ -107,6 +108,125 @@ public sealed class WindowsOcrProvider : IOcrProvider
         }
     }
 
+    // ---------------------------------------------------------------- layout
+
+    /// <summary>
+    /// Same engine selection as <see cref="RecognizeAsync"/>, but the winner's line
+    /// geometry is kept.
+    ///
+    /// Which engine wins matters much less here than it does for the popup. Line
+    /// positions are close to language-independent — every engine finds roughly the same
+    /// runs of ink — so even when the scorer picks wrong, the boxes are still usable and
+    /// the translator gets the picture itself to correct the text against.
+    /// </summary>
+    public async Task<OcrLayout> RecognizeLayoutAsync(
+        Bitmap image, OcrRequest request, CancellationToken cancellationToken = default)
+    {
+        var sw = Stopwatch.StartNew();
+
+        try
+        {
+            var wanted = request.ResolveTargets();
+            if (wanted.Count == 0) return OcrLayout.Failed("没有指定任何识别语言。");
+
+            var installed = LanguagePackHelper.InstalledTags();
+
+            var usable = new List<string>();
+            foreach (var tag in wanted)
+            {
+                var match = installed.FirstOrDefault(i => OcrLanguages.TagsMatch(i, tag));
+                if (match is not null && !usable.Contains(match)) usable.Add(match);
+            }
+
+            if (usable.Count == 0)
+                return OcrLayout.MissingLanguagePack(LanguagePackHelper.Missing(wanted));
+
+            var (softwareBitmap, scale) = await ToSoftwareBitmapAsync(image).ConfigureAwait(true);
+            using var owned = softwareBitmap;
+
+            OcrResult? best = null;
+            var bestTag = usable[0];
+            var bestScore = double.NegativeInfinity;
+
+            foreach (var tag in usable)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var engine = TryCreateEngine(tag);
+                if (engine is null) continue;
+
+                var result = await engine.RecognizeAsync(softwareBitmap).AsTask(cancellationToken).ConfigureAwait(true);
+                var score = LanguageScorer.Score(BuildText(result), tag);
+                Log.Info($"整屏 OCR 尝试 {tag}：{result.Lines.Count} 行，得分 {score:F1}");
+
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    best = result;
+                    bestTag = tag;
+                }
+            }
+
+            var elapsed = sw.ElapsedMilliseconds;
+            if (best is null) return OcrLayout.NoText(elapsed);
+
+            var lines = ToLineBoxes(best, scale);
+            if (lines.Count == 0) return OcrLayout.NoText(elapsed);
+
+            Log.Info($"整屏 OCR 选用 {bestTag}，{lines.Count} 行，用时 {elapsed}ms");
+            return OcrLayout.Success(lines, bestTag, elapsed);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            Log.Error("整屏文字识别失败", ex);
+            return OcrLayout.Failed(ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// A line's box is the union of its words'. WinRT exposes BoundingRect on OcrWord
+    /// only — OcrLine has no rectangle of its own.
+    /// </summary>
+    private static List<OcrLineBox> ToLineBoxes(OcrResult result, double scale)
+    {
+        var boxes = new List<OcrLineBox>();
+        var inverse = scale > 0 ? 1.0 / scale : 1.0;
+
+        foreach (var line in result.Lines)
+        {
+            var text = CollapseCjkSpaces(line.Text).Trim();
+            if (text.Length == 0) continue;
+
+            double left = double.MaxValue, top = double.MaxValue, right = 0, bottom = 0;
+            var any = false;
+
+            foreach (var word in line.Words)
+            {
+                var r = word.BoundingRect;
+                if (r.Width <= 0 || r.Height <= 0) continue;
+                any = true;
+                left = Math.Min(left, r.X);
+                top = Math.Min(top, r.Y);
+                right = Math.Max(right, r.X + r.Width);
+                bottom = Math.Max(bottom, r.Y + r.Height);
+            }
+
+            if (!any) continue;
+
+            boxes.Add(new OcrLineBox(text, new RectangleF(
+                (float)(left * inverse),
+                (float)(top * inverse),
+                (float)((right - left) * inverse),
+                (float)((bottom - top) * inverse))));
+        }
+
+        return boxes;
+    }
+
     private static OcrEngine? TryCreateEngine(string tag)
     {
         try
@@ -127,7 +247,12 @@ public sealed class WindowsOcrProvider : IOcrProvider
     /// SoftwareBitmap's raw buffer: the buffer route needs COM interop that is fragile
     /// across .NET/CsWinRT versions, and encoding a screen-sized crop costs only a few ms.
     /// </summary>
-    private static async Task<SoftwareBitmap> ToSoftwareBitmapAsync(Bitmap source)
+    /// <returns>
+    /// The bitmap WinRT will read, and the factor its coordinates must be divided by to
+    /// get back to <paramref name="source"/> pixels. Callers that only want text can
+    /// ignore the factor; callers that want boxes cannot.
+    /// </returns>
+    private static async Task<(SoftwareBitmap Bitmap, double Scale)> ToSoftwareBitmapAsync(Bitmap source)
     {
         byte[] bytes;
         using (var ms = new MemoryStream())
@@ -164,12 +289,15 @@ public sealed class WindowsOcrProvider : IOcrProvider
             InterpolationMode = BitmapInterpolationMode.Cubic,
         };
 
-        return await decoder.GetSoftwareBitmapAsync(
+        var bitmap = await decoder.GetSoftwareBitmapAsync(
             BitmapPixelFormat.Bgra8,
             BitmapAlphaMode.Premultiplied,
             transform,
             ExifOrientationMode.IgnoreExifOrientation,
             ColorManagementMode.DoNotColorManage);
+
+        var scale = source.Width > 0 ? (double)width / source.Width : 1.0;
+        return (bitmap, scale);
     }
 
     /// <summary>

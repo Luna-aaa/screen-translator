@@ -57,13 +57,25 @@ public static class HistoryStore
 
             // Re-translating the same capture, or framing the same thing twice, should
             // refresh the existing entry rather than fill the list with near-duplicates.
-            _entries!.RemoveAll(e =>
-                string.Equals(e.Original, record.Original, StringComparison.Ordinal));
+            //
+            // The vision route has no original at all, and matching on an empty string
+            // would make every new entry delete every previous one - history that quietly
+            // never holds more than a single row.
+            _entries!.RemoveAll(IsDuplicateOf(record));
 
             _entries.Insert(0, record);
             if (_entries.Count > MaxEntries) _entries.RemoveRange(MaxEntries, _entries.Count - MaxEntries);
             Save();
         }
+    }
+
+    private static Predicate<TranslationRecord> IsDuplicateOf(TranslationRecord record)
+    {
+        if (!string.IsNullOrEmpty(record.Original))
+            return e => string.Equals(e.Original, record.Original, StringComparison.Ordinal);
+
+        return e => string.IsNullOrEmpty(e.Original)
+                    && string.Equals(e.Translation, record.Translation, StringComparison.Ordinal);
     }
 
     public static void Clear()

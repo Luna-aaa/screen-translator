@@ -1,5 +1,3 @@
-using System.Text.Json.Serialization;
-
 namespace ScreenTranslator.Config;
 
 /// <summary>
@@ -10,10 +8,11 @@ public sealed class AppConfig
 {
     /// <summary>
     /// Bumped when the shape changes in a way that needs migration.
-    /// v2: candidate OCR languages are seeded from what the machine can actually
-    /// recognize, instead of a hard-coded English+Japanese pair.
+    /// v2: candidate OCR languages are seeded from what the machine can actually recognize.
+    /// v3: timeout / streaming / theme / history / capture folder moved out of the
+    ///     top level and into each route, which now owns its own copy.
     /// </summary>
-    public const int CurrentSchemaVersion = 2;
+    public const int CurrentSchemaVersion = 3;
 
     /// <summary>
     /// Defaults to 1, NOT the current version. System.Text.Json leaves a property at its
@@ -24,14 +23,17 @@ public sealed class AppConfig
     public int SchemaVersion { get; set; } = 1;
 
     // ---- general ----------------------------------------------------------
+    /// <summary>框选翻译 (Ctrl+Alt+Q).</summary>
     public string Hotkey { get; set; } = "Ctrl+Alt+Q";
+
+    /// <summary>
+    /// 全屏翻译 (Ctrl+Alt+W). Empty means "do not register it" — a global hotkey is a
+    /// scarce, shared resource, and someone who does not use this feature should not be
+    /// holding one hostage. The tray menu entry works either way.
+    /// </summary>
+    public string OverlayHotkey { get; set; } = "Ctrl+Alt+W";
+
     public bool AutoStart { get; set; }
-
-    /// <summary>Keep a PNG of every crop.</summary>
-    public bool SaveCaptures { get; set; } = true;
-
-    /// <summary>Folder for saved crops. Empty means <see cref="Paths.DefaultCaptureDir"/>.</summary>
-    public string CaptureDirectory { get; set; } = "";
 
     // ---- OCR --------------------------------------------------------------
     /// <summary>"auto", or a BCP-47 tag to pin the recognizer to one language.</summary>
@@ -40,118 +42,67 @@ public sealed class AppConfig
     /// <summary>When OcrSourceLanguage is "auto", only these engines are tried.</summary>
     public List<string> OcrCandidateLanguages { get; set; } = new() { "en-US", "ja-JP" };
 
-    // ---- translation ------------------------------------------------------
+    // ---- routes -----------------------------------------------------------
     /// <summary>Id of the active <c>ITranslator</c> implementation.</summary>
     public string ActiveTranslator { get; set; } = OpenAiSettings.TranslatorId;
 
+    /// <summary>
+    /// Which route 框选翻译 takes: <see cref="Pipelines.Classic"/> (OCR then translate) or
+    /// <see cref="Pipelines.Vision"/> (send the picture itself). Does not affect 全屏翻译,
+    /// which always needs OCR for coordinates.
+    /// </summary>
+    public string Pipeline { get; set; } = Pipelines.Classic;
+
+    /// <summary>识文翻译.</summary>
     public OpenAiSettings OpenAi { get; set; } = new();
 
-    /// <summary>Target language for every engine. Fixed to Simplified Chinese for v1.</summary>
+    /// <summary>看图翻译.</summary>
+    public VisionSettings Vision { get; set; } = new();
+
+    /// <summary>全屏翻译.</summary>
+    public SnapshotSettings Snapshot { get; set; } = new();
+
+    /// <summary>Target language for every route. Fixed to Simplified Chinese for v1.</summary>
     public string TargetLanguage { get; set; } = "zh-Hans";
 
+    /// <summary>
+    /// Whichever of the two 框选翻译 routes is currently selected. JsonIgnore because it is
+    /// a view of OpenAi/Vision, not a field: serializing it wrote a third copy of one of
+    /// them into config.json, where it looked like a real setting nobody could edit.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public PopupRouteSettings ActiveRoute => Pipelines.IsVision(Pipeline) ? Vision : OpenAi;
+
+    // ---- legacy ------------------------------------------------------------
+    // Read only to migrate a pre-v3 file into the per-route fields above; nothing consults
+    // them afterwards. They stay declared so an old config still parses.
+
     public int RequestTimeoutSeconds { get; set; } = 30;
-
-    /// <summary>
-    /// Show the translation as it is written instead of after it finishes. Off is a real
-    /// fallback, not just a preference: a few compatible services mishandle stream:true.
-    /// </summary>
     public bool StreamTranslation { get; set; } = true;
-
-    /// <summary>
-    /// Remember recent translations in history.json. Off also means nothing new is
-    /// written; clearing what is already there is a separate, explicit action.
-    /// </summary>
     public bool KeepHistory { get; set; } = true;
-
-    /// <summary>Colour scheme id for the result popup; see <c>PopupThemes</c>.</summary>
     public string PopupTheme { get; set; } = "dark";
+    public bool SaveCaptures { get; set; } = true;
+    public string CaptureDirectory { get; set; } = "";
 
-    public AppConfig Clone()
+    public AppConfig Clone() => new()
     {
-        return new AppConfig
-        {
-            SchemaVersion = SchemaVersion,
-            Hotkey = Hotkey,
-            AutoStart = AutoStart,
-            SaveCaptures = SaveCaptures,
-            CaptureDirectory = CaptureDirectory,
-            OcrSourceLanguage = OcrSourceLanguage,
-            OcrCandidateLanguages = new List<string>(OcrCandidateLanguages),
-            ActiveTranslator = ActiveTranslator,
-            OpenAi = OpenAi.Clone(),
-            TargetLanguage = TargetLanguage,
-            RequestTimeoutSeconds = RequestTimeoutSeconds,
-            StreamTranslation = StreamTranslation,
-            KeepHistory = KeepHistory,
-            PopupTheme = PopupTheme,
-        };
-    }
-}
-
-/// <summary>
-/// Settings for the OpenAI-compatible /chat/completions adapter. One implementation
-/// covers DeepSeek, DashScope, GLM, Kimi, OpenAI and most relay endpoints — switching
-/// vendor is just a different base URL + model + key.
-/// </summary>
-public sealed class OpenAiSettings
-{
-    public const string TranslatorId = "openai-compatible";
-
-    /// <summary>Id of the <see cref="ServicePresets"/> entry the user picked, or "custom".</summary>
-    public string Preset { get; set; } = "deepseek";
-
-    public string BaseUrl { get; set; } = "https://api.deepseek.com/v1";
-    public string Model { get; set; } = "deepseek-chat";
-
-    /// <summary>DPAPI ciphertext, base64. Read/write it through <see cref="SecureStore"/>.</summary>
-    public string ApiKeyProtected { get; set; } = "";
-
-    /// <summary>Extra instruction appended to the translation prompt. Empty = engine default.</summary>
-    public string ExtraPrompt { get; set; } = "";
-
-    [JsonIgnore]
-    public bool HasKey => !string.IsNullOrEmpty(ApiKeyProtected);
-
-    public OpenAiSettings Clone() => new()
-    {
-        Preset = Preset,
-        BaseUrl = BaseUrl,
-        Model = Model,
-        ApiKeyProtected = ApiKeyProtected,
-        ExtraPrompt = ExtraPrompt,
+        SchemaVersion = SchemaVersion,
+        Hotkey = Hotkey,
+        OverlayHotkey = OverlayHotkey,
+        AutoStart = AutoStart,
+        OcrSourceLanguage = OcrSourceLanguage,
+        OcrCandidateLanguages = new List<string>(OcrCandidateLanguages),
+        ActiveTranslator = ActiveTranslator,
+        Pipeline = Pipeline,
+        OpenAi = OpenAi.Clone(),
+        Vision = Vision.Clone(),
+        Snapshot = Snapshot.Clone(),
+        TargetLanguage = TargetLanguage,
+        RequestTimeoutSeconds = RequestTimeoutSeconds,
+        StreamTranslation = StreamTranslation,
+        KeepHistory = KeepHistory,
+        PopupTheme = PopupTheme,
+        SaveCaptures = SaveCaptures,
+        CaptureDirectory = CaptureDirectory,
     };
-}
-
-/// <summary>
-/// Known OpenAI-compatible endpoints, so the user only has to paste a key.
-/// Adding a vendor here is a one-line change — no code path depends on the list.
-/// </summary>
-public sealed record ServicePreset(string Id, string DisplayName, string BaseUrl, string Model, string SignupHint)
-{
-    public override string ToString() => DisplayName;
-}
-
-public static class ServicePresets
-{
-    public static readonly ServicePreset Custom =
-        new("custom", "自定义（手动填写）", "", "", "任何兼容 OpenAI 接口格式的服务都可以填在这里。");
-
-    public static readonly IReadOnlyList<ServicePreset> All = new[]
-    {
-        new ServicePreset("deepseek", "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat",
-            "在 platform.deepseek.com 注册后，于「API keys」页面创建。"),
-        new ServicePreset("dashscope", "通义千问（阿里云百炼）",
-            "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus",
-            "在 bailian.console.aliyun.com 开通后，于「API-KEY」页面创建。"),
-        new ServicePreset("zhipu", "智谱 GLM", "https://open.bigmodel.cn/api/paas/v4", "glm-4-flash",
-            "在 bigmodel.cn 注册后，于「API 密钥」页面创建。"),
-        new ServicePreset("moonshot", "月之暗面 Kimi", "https://api.moonshot.cn/v1", "moonshot-v1-8k",
-            "在 platform.moonshot.cn 注册后，于「API Key 管理」页面创建。"),
-        new ServicePreset("openai", "OpenAI", "https://api.openai.com/v1", "gpt-4o-mini",
-            "在 platform.openai.com 的「API keys」页面创建。国内访问可能需要自备网络条件。"),
-        Custom,
-    };
-
-    public static ServicePreset Find(string? id) =>
-        All.FirstOrDefault(p => string.Equals(p.Id, id, StringComparison.OrdinalIgnoreCase)) ?? Custom;
 }

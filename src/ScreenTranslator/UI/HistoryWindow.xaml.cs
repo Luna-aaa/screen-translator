@@ -99,24 +99,9 @@ public partial class HistoryWindow : Window
             return;
         }
 
-        // The clipboard is a shared, single-owner resource; another app holding it open
-        // makes this throw, and a moment later it almost always succeeds.
-        for (var attempt = 0; attempt < 3; attempt++)
-        {
-            try
-            {
-                Clipboard.SetText(text);
-                StatusText.Text = $"已复制{what}（{text.Length} 字）　{DateTime.Now:HH:mm:ss}";
-                return;
-            }
-            catch (Exception ex)
-            {
-                Log.Warn($"复制历史记录失败（第 {attempt + 1} 次）：{ex.Message}");
-                System.Threading.Thread.Sleep(60);
-            }
-        }
-
-        StatusText.Text = "复制失败，剪贴板被别的程序占着，过一秒再试。";
+        StatusText.Text = ClipboardHelper.TrySetText(text)
+            ? $"已复制{what}（{text.Length} 字）　{DateTime.Now:HH:mm:ss}"
+            : "复制失败，剪贴板被别的程序占着，过一秒再试。";
     }
 
     // ----------------------------------------------------------------- clearing

@@ -1,8 +1,8 @@
-<Window x:Class="ScreenTranslator.UI.SettingsWindow"
+﻿<Window x:Class="ScreenTranslator.UI.SettingsWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="屏幕划取翻译 — 设置"
-        Width="640" Height="600" MinWidth="560" MinHeight="480"
+        Width="1000" Height="720" MinWidth="860" MinHeight="560"
         WindowStartupLocation="CenterScreen"
         FontFamily="Microsoft YaHei UI, Segoe UI, Microsoft YaHei"
         FontSize="13"
@@ -24,15 +24,38 @@
             <Setter Property="Margin" Value="0,0,0,6" />
         </Style>
 
+        <!-- Heading for one of the two side-by-side route columns. -->
+        <Style x:Key="ModuleTitle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="15" />
+            <Setter Property="FontWeight" Value="Bold" />
+            <Setter Property="Foreground" Value="{StaticResource Ink}" />
+            <Setter Property="Margin" Value="0,0,0,2" />
+        </Style>
+
+        <Style x:Key="FieldLabel" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="12.5" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Foreground" Value="{StaticResource Ink}" />
+            <Setter Property="Margin" Value="0,12,0,4" />
+        </Style>
+
         <Style x:Key="Hint" TargetType="TextBlock">
             <Setter Property="FontSize" Value="11.5" />
             <Setter Property="Foreground" Value="{StaticResource Muted}" />
             <Setter Property="TextWrapping" Value="Wrap" />
-            <Setter Property="Margin" Value="0,5,0,0" />
+            <Setter Property="Margin" Value="0,4,0,0" />
         </Style>
 
         <Style x:Key="Block" TargetType="StackPanel">
             <Setter Property="Margin" Value="0,0,0,20" />
+        </Style>
+
+        <Style x:Key="ModuleCard" TargetType="Border">
+            <Setter Property="Background" Value="White" />
+            <Setter Property="BorderBrush" Value="#FFDDE1E8" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="14,12,14,14" />
+            <Setter Property="CornerRadius" Value="6" />
         </Style>
 
         <Style TargetType="TextBox">
@@ -49,8 +72,19 @@
             <Setter Property="VerticalContentAlignment" Value="Center" />
         </Style>
 
+        <!--
+            The wheel is trapped on every ComboBox: scrolling the page with the pointer
+            over one used to silently change the model, which the user only discovered
+            afterwards from a failed translation. The handler re-raises the event so the
+            page still scrolls.
+        -->
+        <Style TargetType="ComboBox">
+            <Setter Property="Padding" Value="7,6" />
+            <EventSetter Event="PreviewMouseWheel" Handler="Combo_PreviewMouseWheel" />
+        </Style>
+
         <Style TargetType="CheckBox">
-            <Setter Property="Margin" Value="0,0,0,8" />
+            <Setter Property="Margin" Value="0,0,0,4" />
             <Setter Property="Foreground" Value="{StaticResource Ink}" />
             <Setter Property="VerticalContentAlignment" Value="Center" />
         </Style>
@@ -90,7 +124,7 @@
                     <StackPanel>
 
                         <StackPanel Style="{StaticResource Block}">
-                            <TextBlock Text="全局快捷键" Style="{StaticResource SectionTitle}" />
+                            <TextBlock Text="框选翻译快捷键" Style="{StaticResource SectionTitle}" />
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />
@@ -101,13 +135,38 @@
                                          InputMethod.IsInputMethodEnabled="False"
                                          FontWeight="SemiBold"
                                          PreviewKeyDown="HotkeyBox_PreviewKeyDown" />
-                                <Button x:Name="ResetHotkeyButton" Grid.Column="1" Margin="8,0,0,0"
+                                <Button Grid.Column="1" Margin="8,0,0,0"
                                         Content="恢复默认" Style="{StaticResource MinorButton}"
                                         Click="ResetHotkeyButton_Click" />
                             </Grid>
                             <TextBlock Style="{StaticResource Hint}"
-                                       Text="点一下上面的框，然后直接按下你想用的组合键。必须带 Ctrl / Alt / Win 其中之一（单独的 F1–F12 也可以）。" />
+                                       Text="按一下框住屏幕上的一块区域，翻译结果弹在旁边的小窗里。点一下上面的框，然后直接按下你想用的组合键。必须带 Ctrl / Alt / Win 其中之一（单独的 F1–F12 也可以）。" />
                             <TextBlock x:Name="HotkeyStatusText" Style="{StaticResource Hint}" Margin="0,6,0,0" />
+                        </StackPanel>
+
+                        <StackPanel Style="{StaticResource Block}">
+                            <TextBlock Text="全屏翻译快捷键" Style="{StaticResource SectionTitle}" />
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBox x:Name="SnapshotHotkeyBox" Grid.Column="0" IsReadOnly="True"
+                                         IsReadOnlyCaretVisible="False"
+                                         InputMethod.IsInputMethodEnabled="False"
+                                         FontWeight="SemiBold"
+                                         PreviewKeyDown="SnapshotHotkeyBox_PreviewKeyDown" />
+                                <Button Grid.Column="1" Margin="8,0,0,0"
+                                        Content="恢复默认" Style="{StaticResource MinorButton}"
+                                        Click="ResetSnapshotHotkey_Click" />
+                                <Button Grid.Column="2" Margin="8,0,0,0"
+                                        Content="不用" MinWidth="60" Style="{StaticResource MinorButton}"
+                                        Click="ClearSnapshotHotkey_Click" />
+                            </Grid>
+                            <TextBlock Style="{StaticResource Hint}"
+                                       Text="按一下把整屏的文字翻译好、直接盖在原文位置上，看完按 Esc 关掉。这是一张快照，不会跟着画面变。点「不用」可以把这个快捷键让出来，托盘菜单里的「整屏翻译」照样能点。" />
+                            <TextBlock x:Name="SnapshotHotkeyStatusText" Style="{StaticResource Hint}" Margin="0,6,0,0" />
                         </StackPanel>
 
                         <StackPanel Style="{StaticResource Block}">
@@ -115,36 +174,6 @@
                             <CheckBox x:Name="AutoStartCheck" Content="开机时自动启动" />
                             <TextBlock Style="{StaticResource Hint}"
                                        Text="通过当前用户的注册表启动项实现，不需要管理员权限。程序换位置后重新勾选一次即可。" />
-                        </StackPanel>
-
-                        <StackPanel Style="{StaticResource Block}">
-                            <TextBlock Text="截图" Style="{StaticResource SectionTitle}" />
-                            <CheckBox x:Name="SaveCapturesCheck" Content="保留每次框选的截图" />
-                            <Grid Margin="0,4,0,0">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <TextBox x:Name="CaptureDirBox" Grid.Column="0" />
-                                <Button Grid.Column="1" Margin="8,0,0,0" Content="浏览…" MinWidth="72"
-                                        Style="{StaticResource MinorButton}" Click="BrowseCaptureDir_Click" />
-                                <Button Grid.Column="2" Margin="8,0,0,0" Content="打开" MinWidth="60"
-                                        Style="{StaticResource MinorButton}" Click="OpenCaptureDir_Click" />
-                            </Grid>
-                            <TextBlock x:Name="CaptureDirText" Style="{StaticResource Hint}" />
-                        </StackPanel>
-
-                        <StackPanel Style="{StaticResource Block}">
-                            <TextBlock Text="翻译历史" Style="{StaticResource SectionTitle}" />
-                            <CheckBox x:Name="KeepHistoryCheck" Content="记住最近的翻译" />
-                            <StackPanel Orientation="Horizontal">
-                                <Button Content="查看历史" Style="{StaticResource MinorButton}"
-                                        Click="OpenHistory_Click" />
-                                <Button Content="清空历史" Style="{StaticResource MinorButton}"
-                                        Margin="8,0,0,0" Click="ClearHistory_Click" />
-                            </StackPanel>
-                            <TextBlock x:Name="HistoryHintText" Style="{StaticResource Hint}" />
                         </StackPanel>
 
                         <StackPanel Style="{StaticResource Block}">
@@ -162,35 +191,243 @@
                 </ScrollViewer>
             </TabItem>
 
-            <!-- ================================ 翻译 ================================ -->
-            <TabItem Header="翻译">
+            <!-- ============================== 框选翻译 ============================== -->
+            <TabItem Header="框选翻译">
                 <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="18,18,18,8">
                     <StackPanel>
 
                         <StackPanel Style="{StaticResource Block}">
-                            <TextBlock Text="翻译服务" Style="{StaticResource SectionTitle}" />
-                            <ComboBox x:Name="PresetCombo" Padding="7,6"
-                                      SelectionChanged="PresetCombo_SelectionChanged" />
-                            <TextBlock x:Name="PresetHintText" Style="{StaticResource Hint}" />
+                            <TextBlock Text="翻译方式" Style="{StaticResource SectionTitle}" />
+                            <ComboBox x:Name="PipelineCombo" SelectionChanged="PipelineCombo_SelectionChanged" />
+                            <TextBlock x:Name="PipelineHintText" Style="{StaticResource Hint}" />
+                        </StackPanel>
+
+                        <Grid Margin="0,0,0,16">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="16" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+
+                            <!-- 识文翻译 -->
+                            <Border x:Name="ClassicCard" Grid.Column="0" Style="{StaticResource ModuleCard}">
+                                <StackPanel>
+                                    <TextBlock Text="识文翻译" Style="{StaticResource ModuleTitle}" />
+                                    <TextBlock Style="{StaticResource Hint}" Margin="0,0,0,2"
+                                               Text="Windows 先认字，再把文字发给模型翻译。认字在本机做。" />
+
+                                    <TextBlock Text="服务" Style="{StaticResource FieldLabel}" />
+                                    <ComboBox x:Name="ClassicPresetCombo"
+                                              SelectionChanged="ClassicPreset_SelectionChanged" />
+                                    <TextBlock x:Name="ClassicPresetHint" Style="{StaticResource Hint}" />
+
+                                    <TextBlock Text="接口地址" Style="{StaticResource FieldLabel}" />
+                                    <TextBox x:Name="ClassicBaseUrlBox" />
+
+                                    <TextBlock Text="API Key" Style="{StaticResource FieldLabel}" />
+                                    <Grid>
+                                        <PasswordBox x:Name="ClassicKeyBox" />
+                                        <TextBox x:Name="ClassicKeyPlainBox" Visibility="Collapsed" />
+                                    </Grid>
+                                    <CheckBox x:Name="ClassicShowKey" Content="显示 Key" Margin="0,6,0,0"
+                                              Checked="ClassicShowKey_Changed" Unchecked="ClassicShowKey_Changed" />
+
+                                    <TextBlock Text="模型" Style="{StaticResource FieldLabel}" />
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <ComboBox x:Name="ClassicModelBox" Grid.Column="0" IsEditable="True" />
+                                        <Button x:Name="ClassicFetchButton" Grid.Column="1" Margin="8,0,0,0"
+                                                Content="拉取" MinWidth="60"
+                                                Style="{StaticResource MinorButton}" Click="ClassicFetchModels_Click" />
+                                    </Grid>
+                                    <TextBlock x:Name="ClassicModelHint" Style="{StaticResource Hint}"
+                                               Text="点「拉取」会问服务商它当前支持哪些模型，也可以直接手填。" />
+
+                                    <TextBlock Text="超时（秒）" Style="{StaticResource FieldLabel}" />
+                                    <TextBox x:Name="ClassicTimeoutBox" Width="110" HorizontalAlignment="Left" />
+
+                                    <TextBlock Text="译文小窗" Style="{StaticResource FieldLabel}" />
+                                    <CheckBox x:Name="ClassicStreamCheck" Content="边翻译边显示" />
+                                    <ComboBox x:Name="ClassicThemeCombo" Width="180" HorizontalAlignment="Left"
+                                              Margin="0,4,0,0" />
+                                    <TextBlock Style="{StaticResource Hint}"
+                                               Text="小窗配色，下次框选时生效。极少数服务不支持流式，小窗一直空着就把上面那个勾去掉。" />
+
+                                    <TextBlock Text="附加要求（可选）" Style="{StaticResource FieldLabel}" />
+                                    <TextBox x:Name="ClassicExtraBox" Height="56" AcceptsReturn="True"
+                                             TextWrapping="Wrap" VerticalContentAlignment="Top"
+                                             VerticalScrollBarVisibility="Auto" />
+                                    <TextBlock Style="{StaticResource Hint}"
+                                               Text="例如：这是游戏对话，翻得口语一点，保留角色名不译。" />
+
+                                    <TextBlock Text="截图保存" Style="{StaticResource FieldLabel}" />
+                                    <CheckBox x:Name="ClassicSaveCheck" Content="保留每次框选的截图" />
+                                    <Grid Margin="0,4,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox x:Name="ClassicDirBox" Grid.Column="0"
+                                                 TextChanged="ClassicDir_TextChanged" />
+                                        <Button Grid.Column="1" Margin="6,0,0,0" Content="浏览…" MinWidth="62"
+                                                Style="{StaticResource MinorButton}" Click="BrowseClassicDir_Click" />
+                                        <Button Grid.Column="2" Margin="6,0,0,0" Content="打开" MinWidth="52"
+                                                Style="{StaticResource MinorButton}" Click="OpenClassicDir_Click" />
+                                    </Grid>
+                                    <TextBlock x:Name="ClassicDirText" Style="{StaticResource Hint}" />
+
+                                    <TextBlock Text="翻译历史" Style="{StaticResource FieldLabel}" />
+                                    <CheckBox x:Name="ClassicHistoryCheck" Content="记住这条路的翻译" />
+
+                                    <Button x:Name="ClassicTestButton" Content="测试连接" Margin="0,14,0,0"
+                                            Style="{StaticResource MinorButton}" HorizontalAlignment="Left"
+                                            MinWidth="110" Click="ClassicTest_Click" />
+                                    <TextBlock x:Name="ClassicTestText" Style="{StaticResource Hint}"
+                                               Text="会用上面填的地址、Key 和模型真发一次翻译请求。" />
+                                </StackPanel>
+                            </Border>
+
+                            <!-- 看图翻译 -->
+                            <Border x:Name="VisionCard" Grid.Column="2" Style="{StaticResource ModuleCard}">
+                                <StackPanel>
+                                    <TextBlock Text="看图翻译" Style="{StaticResource ModuleTitle}" />
+                                    <TextBlock Style="{StaticResource Hint}" Margin="0,0,0,2"
+                                               Text="把框选的那张图直接发给会看图的模型，跳过认字这一步。" />
+
+                                    <TextBlock Text="服务" Style="{StaticResource FieldLabel}" />
+                                    <ComboBox x:Name="VisionPresetCombo"
+                                              SelectionChanged="VisionPreset_SelectionChanged" />
+                                    <TextBlock x:Name="VisionPresetHint" Style="{StaticResource Hint}" />
+
+                                    <TextBlock Text="接口地址" Style="{StaticResource FieldLabel}" />
+                                    <TextBox x:Name="VisionBaseUrlBox" />
+
+                                    <TextBlock Text="API Key" Style="{StaticResource FieldLabel}" />
+                                    <Grid>
+                                        <PasswordBox x:Name="VisionKeyBox" />
+                                        <TextBox x:Name="VisionKeyPlainBox" Visibility="Collapsed" />
+                                    </Grid>
+                                    <CheckBox x:Name="VisionShowKey" Content="显示 Key" Margin="0,6,0,0"
+                                              Checked="VisionShowKey_Changed" Unchecked="VisionShowKey_Changed" />
+
+                                    <TextBlock Text="模型" Style="{StaticResource FieldLabel}" />
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <ComboBox x:Name="VisionModelBox" Grid.Column="0" IsEditable="True" />
+                                        <Button x:Name="VisionFetchButton" Grid.Column="1" Margin="8,0,0,0"
+                                                Content="拉取" MinWidth="60"
+                                                Style="{StaticResource MinorButton}" Click="VisionFetchModels_Click" />
+                                    </Grid>
+                                    <TextBlock x:Name="VisionModelHint" Style="{StaticResource Hint}"
+                                               Text="必须选一个「能看图」的模型，普通文字模型会直接报错。通义千问这边是 qwen-vl 开头的那些。" />
+
+                                    <TextBlock Text="超时（秒）" Style="{StaticResource FieldLabel}" />
+                                    <TextBox x:Name="VisionTimeoutBox" Width="110" HorizontalAlignment="Left" />
+
+                                    <TextBlock Text="发出去的图片最大边长（像素）" Style="{StaticResource FieldLabel}" />
+                                    <TextBox x:Name="VisionMaxEdgeBox" Width="110" HorizontalAlignment="Left" />
+                                    <TextBlock Style="{StaticResource Hint}"
+                                               Text="越大越能看清小字，也越贵越慢。1600 适合大多数情况。" />
+
+                                    <TextBlock Text="原文" Style="{StaticResource FieldLabel}" />
+                                    <CheckBox x:Name="VisionIncludeOriginalCheck" Content="让模型顺便把原文带回来" />
+                                    <TextBlock Style="{StaticResource Hint}"
+                                               Text="这条路没有「认字」这一步，本来是没有原文的。打开后小窗里的「显示原文 / 复制原文」才有东西可显示，代价是每次多花一点点输出。" />
+
+                                    <TextBlock Text="译文小窗" Style="{StaticResource FieldLabel}" />
+                                    <CheckBox x:Name="VisionStreamCheck" Content="边翻译边显示" />
+                                    <ComboBox x:Name="VisionThemeCombo" Width="180" HorizontalAlignment="Left"
+                                              Margin="0,4,0,0" />
+                                    <TextBlock Style="{StaticResource Hint}"
+                                               Text="这一栏和左边是分开的，可以给两条路配不同的颜色，一眼看出走的是哪条。" />
+
+                                    <TextBlock Text="附加要求（可选）" Style="{StaticResource FieldLabel}" />
+                                    <TextBox x:Name="VisionExtraBox" Height="56" AcceptsReturn="True"
+                                             TextWrapping="Wrap" VerticalContentAlignment="Top"
+                                             VerticalScrollBarVisibility="Auto" />
+                                    <TextBlock Style="{StaticResource Hint}"
+                                               Text="例如：这是游戏对话，翻得口语一点，保留角色名不译。" />
+
+                                    <TextBlock Text="截图保存" Style="{StaticResource FieldLabel}" />
+                                    <CheckBox x:Name="VisionSaveCheck" Content="保留每次框选的截图" />
+                                    <Grid Margin="0,4,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox x:Name="VisionDirBox" Grid.Column="0"
+                                                 TextChanged="VisionDir_TextChanged" />
+                                        <Button Grid.Column="1" Margin="6,0,0,0" Content="浏览…" MinWidth="62"
+                                                Style="{StaticResource MinorButton}" Click="BrowseVisionDir_Click" />
+                                        <Button Grid.Column="2" Margin="6,0,0,0" Content="打开" MinWidth="52"
+                                                Style="{StaticResource MinorButton}" Click="OpenVisionDir_Click" />
+                                    </Grid>
+                                    <TextBlock x:Name="VisionDirText" Style="{StaticResource Hint}" />
+
+                                    <TextBlock Text="翻译历史" Style="{StaticResource FieldLabel}" />
+                                    <CheckBox x:Name="VisionHistoryCheck" Content="记住这条路的翻译" />
+
+                                    <Button x:Name="VisionTestButton" Content="测试连接" Margin="0,14,0,0"
+                                            Style="{StaticResource MinorButton}" HorizontalAlignment="Left"
+                                            MinWidth="110" Click="VisionTest_Click" />
+                                    <TextBlock x:Name="VisionTestText" Style="{StaticResource Hint}"
+                                               Text="会真发一张写着英文的小图过去，看模型能不能读出来并翻成中文——这样才能确认它真的会看图。" />
+                                </StackPanel>
+                            </Border>
+                        </Grid>
+
+                        <StackPanel Style="{StaticResource Block}">
+                            <TextBlock Text="翻译记录（两条路共用一份）" Style="{StaticResource SectionTitle}" />
+                            <StackPanel Orientation="Horizontal">
+                                <Button Content="查看历史" Style="{StaticResource MinorButton}"
+                                        Click="OpenHistory_Click" />
+                                <Button Content="清空历史" Style="{StaticResource MinorButton}"
+                                        Margin="8,0,0,0" Click="ClearHistory_Click" />
+                            </StackPanel>
+                            <TextBlock x:Name="HistoryHintText" Style="{StaticResource Hint}" />
+                        </StackPanel>
+
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ============================== 全屏翻译 ============================== -->
+            <TabItem Header="全屏翻译">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="18,18,18,8">
+                    <StackPanel MaxWidth="620" HorizontalAlignment="Left">
+
+                        <TextBlock Style="{StaticResource Hint}" Margin="0,0,0,14"
+                                   Text="按一下快捷键，整屏的文字被翻好、直接盖在原文位置上。文字位置由 Windows 的文字识别提供，译文由这里配置的模型给出，截图会一起发过去让它纠正认错的字。它是一张快照，画面一变就对不上了，Esc 关掉重按即可。" />
+
+                        <StackPanel Style="{StaticResource Block}">
+                            <TextBlock Text="服务" Style="{StaticResource SectionTitle}" />
+                            <ComboBox x:Name="SnapPresetCombo" SelectionChanged="SnapPreset_SelectionChanged" />
+                            <TextBlock x:Name="SnapPresetHint" Style="{StaticResource Hint}" />
+                            <TextBlock Style="{StaticResource Hint}"
+                                       Text="和「看图翻译」是分开的两套，可以各用各的模型——框选用贵的准的，整屏用便宜的快的。" />
                         </StackPanel>
 
                         <StackPanel Style="{StaticResource Block}">
                             <TextBlock Text="接口地址" Style="{StaticResource SectionTitle}" />
-                            <TextBox x:Name="BaseUrlBox" />
-                            <TextBlock Style="{StaticResource Hint}"
-                                       Text="要填到 /v1 这一层，程序会自动接上 /chat/completions。" />
+                            <TextBox x:Name="SnapBaseUrlBox" />
                         </StackPanel>
 
                         <StackPanel Style="{StaticResource Block}">
                             <TextBlock Text="API Key" Style="{StaticResource SectionTitle}" />
                             <Grid>
-                                <PasswordBox x:Name="ApiKeyBox" />
-                                <TextBox x:Name="ApiKeyPlainBox" Visibility="Collapsed" />
+                                <PasswordBox x:Name="SnapKeyBox" />
+                                <TextBox x:Name="SnapKeyPlainBox" Visibility="Collapsed" />
                             </Grid>
-                            <CheckBox x:Name="ShowKeyCheck" Content="显示 Key" Margin="0,8,0,0"
-                                      Checked="ShowKeyCheck_Changed" Unchecked="ShowKeyCheck_Changed" />
-                            <TextBlock Style="{StaticResource Hint}"
-                                       Text="Key 用 Windows 账户密钥加密后存到 config.json，文件里看不到明文，换台电脑也解不开。" />
+                            <CheckBox x:Name="SnapShowKey" Content="显示 Key" Margin="0,8,0,0"
+                                      Checked="SnapShowKey_Changed" Unchecked="SnapShowKey_Changed" />
                         </StackPanel>
 
                         <StackPanel Style="{StaticResource Block}">
@@ -200,50 +437,63 @@
                                     <ColumnDefinition Width="*" />
                                     <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
-                                <!-- Editable: pick from what the service reports, or just type one. -->
-                                <ComboBox x:Name="ModelBox" Grid.Column="0" IsEditable="True" Padding="7,6" />
-                                <Button x:Name="FetchModelsButton" Grid.Column="1" Margin="8,0,0,0"
+                                <ComboBox x:Name="SnapModelBox" Grid.Column="0" IsEditable="True" />
+                                <Button x:Name="SnapFetchButton" Grid.Column="1" Margin="8,0,0,0"
                                         Content="拉取模型" MinWidth="88"
-                                        Style="{StaticResource MinorButton}" Click="FetchModels_Click" />
+                                        Style="{StaticResource MinorButton}" Click="SnapFetchModels_Click" />
                             </Grid>
-                            <TextBlock x:Name="ModelHintText" Style="{StaticResource Hint}"
-                                       Text="点「拉取模型」会问服务商它当前支持哪些模型，省得去翻文档。也可以直接手填。" />
+                            <TextBlock x:Name="SnapModelHint" Style="{StaticResource Hint}"
+                                       Text="必须是能看图的模型。整屏一次要翻几十段，用便宜快的那档更划算。" />
                         </StackPanel>
 
                         <StackPanel Style="{StaticResource Block}">
                             <TextBlock Text="超时（秒）" Style="{StaticResource SectionTitle}" />
-                            <TextBox x:Name="TimeoutBox" Width="110" HorizontalAlignment="Left" />
+                            <TextBox x:Name="SnapTimeoutBox" Width="110" HorizontalAlignment="Left" />
+                            <TextBlock Style="{StaticResource Hint}"
+                                       Text="整屏是一次请求翻几十段，比框选慢得多，别设太短。" />
                         </StackPanel>
 
                         <StackPanel Style="{StaticResource Block}">
-                            <TextBlock Text="译文小窗" Style="{StaticResource SectionTitle}" />
-                            <CheckBox x:Name="StreamCheck" Content="边翻译边显示" />
-                            <TextBlock Style="{StaticResource Hint}" Margin="0,0,0,10"
-                                       Text="打开后译文一个字一个字地冒出来，不用等整段翻完。极少数服务不支持这种方式，如果打开后小窗一直空着，把它关掉即可。" />
-                            <TextBlock Text="配色" FontSize="12" Margin="0,0,0,4"
-                                       Foreground="{StaticResource Ink}" />
-                            <ComboBox x:Name="PopupThemeCombo" Padding="7,6" Width="200"
-                                      HorizontalAlignment="Left" />
+                            <TextBlock Text="发出去的图片最大边长（像素）" Style="{StaticResource SectionTitle}" />
+                            <TextBox x:Name="SnapMaxEdgeBox" Width="110" HorizontalAlignment="Left" />
                             <TextBlock Style="{StaticResource Hint}"
-                                       Text="下次框选时生效。小窗里的文字可以用鼠标拖选，选中后「复制译文」会变成「复制选中」。" />
+                                       Text="整屏内容多、字小，这里比框选设大一点更稳（2000 上下）。" />
                         </StackPanel>
 
                         <StackPanel Style="{StaticResource Block}">
                             <TextBlock Text="附加要求（可选）" Style="{StaticResource SectionTitle}" />
-                            <TextBox x:Name="ExtraPromptBox" Height="66" AcceptsReturn="True"
+                            <TextBox x:Name="SnapExtraBox" Height="60" AcceptsReturn="True"
                                      TextWrapping="Wrap" VerticalContentAlignment="Top"
                                      VerticalScrollBarVisibility="Auto" />
                             <TextBlock Style="{StaticResource Hint}"
-                                       Text="例如：这是游戏对话，翻得口语一点，保留角色名不译。" />
+                                       Text="译文要塞回原文占的位置上，所以这里适合写「尽量短」这类要求。" />
                         </StackPanel>
 
                         <StackPanel Style="{StaticResource Block}">
-                            <Button x:Name="TestConnectionButton" Content="测试连接"
+                            <TextBlock Text="图片保存位置" Style="{StaticResource SectionTitle}" />
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBox x:Name="SnapDirBox" Grid.Column="0" TextChanged="SnapDir_TextChanged" />
+                                <Button Grid.Column="1" Margin="8,0,0,0" Content="浏览…" MinWidth="72"
+                                        Style="{StaticResource MinorButton}" Click="BrowseSnapDir_Click" />
+                                <Button Grid.Column="2" Margin="8,0,0,0" Content="打开" MinWidth="60"
+                                        Style="{StaticResource MinorButton}" Click="OpenSnapDir_Click" />
+                            </Grid>
+                            <TextBlock x:Name="SnapDirText" Style="{StaticResource Hint}" />
+                            <TextBlock Style="{StaticResource Hint}"
+                                       Text="翻译快照里点「保存图片」或按 Ctrl+S，整张翻好的图就存到这里。不会自动保存。" />
+                        </StackPanel>
+
+                        <StackPanel Style="{StaticResource Block}">
+                            <Button x:Name="SnapTestButton" Content="测试连接"
                                     Style="{StaticResource MinorButton}" HorizontalAlignment="Left"
-                                    MinWidth="110" Click="TestConnection_Click"
-                                    ToolTip="用当前填写的内容真发一次翻译请求" />
-                            <TextBlock x:Name="TestResultText" Style="{StaticResource Hint}"
-                                       Text="会用上面填的地址、Key 和模型真发一次请求。" />
+                                    MinWidth="110" Click="SnapTest_Click" />
+                            <TextBlock x:Name="SnapTestText" Style="{StaticResource Hint}"
+                                       Text="会真发一张写着英文的小图过去，看模型能不能读出来并翻成中文。" />
                         </StackPanel>
 
                     </StackPanel>
@@ -253,11 +503,14 @@
             <!-- ============================== 文字识别 ============================== -->
             <TabItem Header="文字识别">
                 <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="18,18,18,8">
-                    <StackPanel>
+                    <StackPanel MaxWidth="620" HorizontalAlignment="Left">
+
+                        <TextBlock Style="{StaticResource Hint}" Margin="0,0,0,14"
+                                   Text="这一页管的是 Windows 自带的文字识别。「识文翻译」和「全屏翻译」都会用到它；「看图翻译」不用。" />
 
                         <StackPanel Style="{StaticResource Block}">
                             <TextBlock Text="源语言" Style="{StaticResource SectionTitle}" />
-                            <ComboBox x:Name="SourceLanguageCombo" Padding="7,6"
+                            <ComboBox x:Name="SourceLanguageCombo"
                                       SelectionChanged="SourceLanguageCombo_SelectionChanged" />
                             <TextBlock Style="{StaticResource Hint}"
                                        Text="系统的文字识别不会自己判断语言，必须指定。选「自动」时，程序会在下面勾选的语言里各试一遍，挑最合理的结果——锁定成固定语言会更快也更准。" />
@@ -303,20 +556,35 @@
             <!-- ================================ 关于 ================================ -->
             <TabItem Header="关于">
                 <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="18,18,18,8">
-                    <StackPanel>
+                    <StackPanel MaxWidth="680" HorizontalAlignment="Left">
                         <TextBlock Text="屏幕划取翻译" FontSize="18" FontWeight="SemiBold"
                                    Foreground="{StaticResource Ink}" />
                         <TextBlock x:Name="VersionText" Style="{StaticResource Hint}" Margin="0,6,0,18" />
 
-                        <TextBlock Text="当前进度" Style="{StaticResource SectionTitle}" />
+                        <TextBlock Text="两种用法" Style="{StaticResource SectionTitle}" />
+                        <TextBlock TextWrapping="Wrap" Foreground="{StaticResource Muted}" LineHeight="21"
+                                   Margin="0,0,0,18">
+                            <Run Text="框选翻译 —— 框住屏幕上的一块，译文弹在旁边的小窗里。" FontWeight="SemiBold" /><LineBreak />
+                            <Run Text="　　可以选走「识文翻译」（本机认字 + 文字模型）或「看图翻译」（图直接给模型）。" /><LineBreak />
+                            <LineBreak />
+                            <Run Text="全屏翻译 —— 整屏的字被翻好、原地盖在原文上，是一张快照。" FontWeight="SemiBold" /><LineBreak />
+                            <Run Text="　　文字位置由本机识别提供，译文由模型给出，两者合起来用。" />
+                        </TextBlock>
+
+                        <TextBlock Text="当前进度" Style="{StaticResource SectionTitle}" Margin="0,10,0,6" />
                         <TextBlock TextWrapping="Wrap" Foreground="{StaticResource Muted}" LineHeight="21">
                             <Run Text="✅ 阶段 0　托盘、快捷键、单实例、设置、配置加密" /><LineBreak />
-                            <Run Text="⬜ 阶段 1　框选 + 截图" /><LineBreak />
-                            <Run Text="⬜ 阶段 2　文字识别" /><LineBreak />
-                            <Run Text="⬜ 阶段 3　翻译打通" /><LineBreak />
-                            <Run Text="⬜ 阶段 4　打磨" /><LineBreak />
-                            <Run Text="⬜ 阶段 5　可换引擎" />
+                            <Run Text="✅ 阶段 1　框选 + 截图" /><LineBreak />
+                            <Run Text="✅ 阶段 2　文字识别" /><LineBreak />
+                            <Run Text="✅ 阶段 3　翻译打通" /><LineBreak />
+                            <Run Text="✅ 阶段 4　打磨：流式、钉住、历史、配色" /><LineBreak />
+                            <Run Text="✅ 阶段 5　看图翻译（多模态）" /><LineBreak />
+                            <Run Text="✅ 阶段 6　全屏原位覆盖（翻译快照）" />
                         </TextBlock>
+
+                        <TextBlock Text="安全" Style="{StaticResource SectionTitle}" Margin="0,20,0,6" />
+                        <TextBlock TextWrapping="Wrap" Foreground="{StaticResource Muted}" LineHeight="21"
+                                   Text="程序不内置任何 API Key。你填的 Key 用 Windows 账户密钥加密后存进 config.json，文件里看不到明文，复制到别的电脑或别的账户都解不开。配置、日志、截图、翻译历史全部存在程序目录之外。" />
 
                         <TextBlock Text="文件位置" Style="{StaticResource SectionTitle}" Margin="0,20,0,6" />
                         <TextBlock x:Name="AboutPathsText" TextWrapping="Wrap" FontSize="11.5"

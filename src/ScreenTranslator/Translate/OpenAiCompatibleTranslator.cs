@@ -50,19 +50,40 @@ public sealed class OpenAiCompatibleTranslator : ITranslator, IModelCatalog
 
     private static HttpClient ClientFor(Uri uri) => uri.IsLoopback ? Direct : Proxied;
 
-    private readonly OpenAiSettings _settings;
+    private readonly IChatServiceSettings _settings;
     private readonly string _apiKey;
     private readonly int _timeoutSeconds;
 
-    public OpenAiCompatibleTranslator(OpenAiSettings settings, int timeoutSeconds)
+    /// <summary>
+    /// Send the picture instead of text. The two modes share this class because they
+    /// differ only in the prompt and the shape of the user message — the endpoint,
+    /// streaming reader, salvage rules and error mapping are identical, and keeping one
+    /// copy of those is worth more than keeping the two routes textually separate.
+    /// </summary>
+    private readonly bool _vision;
+
+    /// <summary>Longest edge of the image actually sent. Ignored in text mode.</summary>
+    private readonly int _maxImageEdge;
+
+    /// <param name="vision">
+    /// Whether to put the picture in the message. Comes from the caller rather than from
+    /// the settings type, because 全屏翻译 and 看图翻译 are different routes that both send
+    /// images, while 识文翻译 sends none.
+    /// </param>
+    public OpenAiCompatibleTranslator(RouteSettings settings, bool vision)
     {
         _settings = settings;
         _apiKey = SecureStore.Unprotect(settings.ApiKeyProtected);
-        _timeoutSeconds = Math.Clamp(timeoutSeconds, 5, 300);
+        _timeoutSeconds = Math.Clamp(settings.TimeoutSeconds, 5, 300);
+        _vision = vision;
+        _maxImageEdge = settings.MaxImageEdge;
     }
 
-    public string Id => OpenAiSettings.TranslatorId;
-    public string DisplayName => "大模型（OpenAI 兼容接口）";
+    public string Id => _vision ? VisionTranslatorId : OpenAiSettings.TranslatorId;
+
+    public const string VisionTranslatorId = "openai-compatible-vision";
+
+    public string DisplayName => _vision ? "看图直翻（多模态大模型）" : "大模型（OpenAI 兼容接口）";
 
     public bool IsConfigured =>
         !string.IsNullOrWhiteSpace(_settings.BaseUrl)
@@ -77,6 +98,30 @@ public sealed class OpenAiCompatibleTranslator : ITranslator, IModelCatalog
         CancellationToken cancellationToken = default)
     {
         if (!IsConfigured) return Task.FromResult(TranslationOutcome.NotConfigured());
+
+        // Batch first: it is the only mode that works on both routes, with or without a
+        // picture, so it must not be shadowed by the vision guard below.
+        if (request.Segments is { Count: > 0 } segments)
+        {
+            var numbered = BatchFormat.BuildInput(segments);
+            var prompt = BuildBatchPrompt(request, segments.Count);
+
+            return _vision && request.Image is not null
+                ? SendVisionAsync(request, prompt, numbered, onPartial, cancellationToken)
+                : SendAsync(prompt, numbered, onPartial, cancellationToken);
+        }
+
+        if (_vision)
+        {
+            if (request.Image is null)
+            {
+                return Task.FromResult(TranslationOutcome.Error(TranslationStatus.Failed,
+                    "看图直翻需要图片，但这次请求没有带上截图。"));
+            }
+
+            return SendVisionAsync(request, BuildVisionPrompt(request), "", onPartial, cancellationToken);
+        }
+
         if (string.IsNullOrWhiteSpace(request.Text))
             return Task.FromResult(TranslationOutcome.Success("", 0));
 
@@ -91,9 +136,88 @@ public sealed class OpenAiCompatibleTranslator : ITranslator, IModelCatalog
         // Deliberately asks for a streamed reply even though it throws the pieces away, so
         // that "测试连接" fails on a service that rejects stream:true instead of passing
         // here and then breaking on the first real capture.
-        return SendAsync("You are a translator. Reply with the Simplified Chinese translation only.",
-            "hello", NullProgress.Instance, cancellationToken);
+        if (!_vision)
+        {
+            return SendAsync("You are a translator. Reply with the Simplified Chinese translation only.",
+                "hello", NullProgress.Instance, cancellationToken);
+        }
+
+        // The vision test has to include a real picture of text. A model that cannot see
+        // will happily answer the prompt anyway, so a text-only probe would report success
+        // for a model that is about to fail on every capture.
+        using var probe = ImageEncoder.BuildProbeImage();
+        return SendAsync(
+            "读出图片里的文字，翻译成简体中文，只输出译文。",
+            "", NullProgress.Instance, cancellationToken, Encode(probe));
     }
+
+    /// <summary>
+    /// Instructions for translating many blocks at once. The output format is the whole
+    /// game here: the caller has to be able to put every translation back over the exact
+    /// words it came from, so a reply that merges two blocks or renumbers them is worse
+    /// than useless. Hence one line per block, numbered, and an explicit count.
+    /// </summary>
+    private string BuildBatchPrompt(TranslationRequest request, int count)
+    {
+        var target = DescribeLanguage(request.TargetLanguage);
+
+        var sb = new StringBuilder();
+        sb.Append($"下面是从一张屏幕截图里识别出来的 {count} 段文字，每段前面有一个方括号编号。");
+        sb.Append($"把每一段分别翻译成{target}。");
+
+        if (_vision)
+        {
+            // The picture is the authority. OCR on a game font or a coloured background
+            // mangles characters, and a model that can see will fix them silently.
+            sb.Append("附带的图片就是这些文字所在的屏幕，识别结果可能有错字或断行，以图片为准。");
+        }
+        else
+        {
+            sb.Append("这些文字来自文字识别，可能有个别错字或多余空格，请结合上下文合理推断原意。");
+        }
+
+        sb.Append($"严格按「[编号] 译文」的格式逐行输出，一共 {count} 行，编号从 1 到 {count}，");
+        sb.Append("顺序不能变、不能合并、不能漏、不能多。");
+        sb.Append("每一行只写译文本身，不要解释、不要重复原文、不要加引号、不要用 Markdown。");
+
+        // Spelled out rather than left to "translate everything": on a screen full of UI
+        // the model starts treating short foreign labels as names and echoing them back,
+        // and the user sees a page that is half translated for no visible reason.
+        sb.Append($"**不管某一段是英文、日文、韩文还是别的什么语言，都必须翻译成{target}**，");
+        sb.Append("包括只有一两个词的短句、菜单项、按钮文字和标题。");
+        sb.Append($"只有两种情况可以原样输出：那一段本来就是{target}，或者它是纯数字、纯符号、网址、文件名这类没有可翻译内容的东西。");
+        sb.Append("拿不准的时候一律翻译。");
+        sb.Append("译文尽量简短，因为它要放回原文占的位置上。");
+
+        if (request.InsistOnTranslating)
+        {
+            sb.Append("注意：下面这些是上一轮你原样返回、没有翻译的段落。");
+            sb.Append($"请重新认真翻译，把它们全部译成{target}，不要再原样返回。");
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.ExtraPrompt))
+        {
+            sb.Append("额外要求：").Append(request.ExtraPrompt.Trim());
+        }
+
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Encoding runs off the UI thread: a full-screen crop is several megapixels, and both
+    /// the PNG pass and the base64 of its result are long enough to be felt as a stutter
+    /// right at the moment the popup is supposed to appear.
+    /// </summary>
+    private async Task<TranslationOutcome> SendVisionAsync(
+        TranslationRequest request, string prompt, string userText,
+        IProgress<string>? onPartial, CancellationToken cancellationToken)
+    {
+        var image = request.Image!;
+        var encoded = await Task.Run(() => Encode(image), cancellationToken).ConfigureAwait(false);
+        return await SendAsync(prompt, userText, onPartial, cancellationToken, encoded).ConfigureAwait(false);
+    }
+
+    private EncodedImage Encode(System.Drawing.Bitmap image) => ImageEncoder.Encode(image, _maxImageEdge);
 
     /// <summary>Asks for a stream without keeping the pieces.</summary>
     private sealed class NullProgress : IProgress<string>
@@ -124,6 +248,36 @@ public sealed class OpenAiCompatibleTranslator : ITranslator, IModelCatalog
         return sb.ToString();
     }
 
+    /// <summary>
+    /// Instructions for the picture route. Everything goes in the user message rather than
+    /// a system message: compatible vision endpoints disagree about whether a system role
+    /// is allowed alongside an image, and this shape is accepted by all of them.
+    /// </summary>
+    private static string BuildVisionPrompt(TranslationRequest request)
+    {
+        var target = DescribeLanguage(request.TargetLanguage);
+
+        var sb = new StringBuilder();
+        sb.Append($"这是用户从电脑屏幕上框选的一块区域。请读出图里的所有文字，并翻译成{target}。");
+        // The whole reason this route exists: one engine reading the picture handles mixed
+        // scripts in one pass, where the OCR route has to pick a single language and gets
+        // the rest wrong.
+        sb.Append("图里可能同时有好几种语言，全部都要翻译，不要漏掉任何一段。");
+        sb.Append($"已经是{target}的部分原样输出。");
+        sb.Append("只输出译文本身：不要描述图片、不要输出原文、不要解释、不要加引号、不要用 Markdown。");
+        sb.Append("尽量保留原来的换行和段落顺序，按人阅读的顺序从上到下、从左到右输出。");
+        sb.Append("如果图里没有任何文字，就只回答「没有找到文字」。");
+
+        if (request.WantOriginal) sb.Append(VisionReply.Instruction);
+
+        if (!string.IsNullOrWhiteSpace(request.ExtraPrompt))
+        {
+            sb.Append("额外要求：").Append(request.ExtraPrompt.Trim());
+        }
+
+        return sb.ToString();
+    }
+
     private static string DescribeLanguage(string tag) => tag switch
     {
         "zh-Hans" or "zh-Hans-CN" or "zh-CN" => "简体中文",
@@ -136,8 +290,14 @@ public sealed class OpenAiCompatibleTranslator : ITranslator, IModelCatalog
 
     // ------------------------------------------------------------------- http
 
+    /// <param name="image">
+    /// Non-null puts the picture in the user message and <paramref name="systemPrompt"/>
+    /// alongside it as text. Null keeps the original two-message text shape byte for byte,
+    /// so the route that was already verified sends exactly what it always sent.
+    /// </param>
     private async Task<TranslationOutcome> SendAsync(
-        string systemPrompt, string userText, IProgress<string>? onPartial, CancellationToken cancellationToken)
+        string systemPrompt, string userText, IProgress<string>? onPartial, CancellationToken cancellationToken,
+        EncodedImage? image = null)
     {
         var sw = Stopwatch.StartNew();
 
@@ -161,22 +321,51 @@ public sealed class OpenAiCompatibleTranslator : ITranslator, IModelCatalog
 
         try
         {
-            var payload = new
-            {
-                model = _settings.Model,
-                messages = new[]
+            object payload = image is null
+                ? new
                 {
-                    new { role = "system", content = systemPrompt },
-                    new { role = "user", content = userText },
-                },
-                temperature = 0.2,
-                stream = streaming,
-            };
+                    model = _settings.Model,
+                    messages = new[]
+                    {
+                        new { role = "system", content = systemPrompt },
+                        new { role = "user", content = userText },
+                    },
+                    temperature = 0.2,
+                    stream = streaming,
+                }
+                : new
+                {
+                    model = _settings.Model,
+                    messages = new object[]
+                    {
+                        new
+                        {
+                            role = "user",
+                            content = new object[]
+                            {
+                                new { type = "image_url", image_url = new { url = image.DataUri } },
+                                new
+                                {
+                                    type = "text",
+                                    // One text part, not two: a vision message that also
+                                    // carried a system role is accepted by some services
+                                    // and rejected by others, so the instructions and the
+                                    // payload travel together.
+                                    text = userText.Length == 0
+                                        ? systemPrompt
+                                        : systemPrompt + "\n\n" + userText,
+                                },
+                            },
+                        },
+                    },
+                    temperature = 0.2,
+                    stream = streaming,
+                };
 
             using var message = new HttpRequestMessage(HttpMethod.Post, uri);
             message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
             message.Content = new StringContent(
-                JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+                JsonSerializer.Serialize(payload, payload.GetType()), Encoding.UTF8, "application/json");
 
             // ResponseHeadersRead is what makes a stream actually stream: the default waits
             // for the entire body before returning, which would defeat the whole point.
@@ -354,10 +543,9 @@ public sealed class OpenAiCompatibleTranslator : ITranslator, IModelCatalog
             // translation, so it is deliberately ignored.
             if (!first.TryGetProperty("delta", out var delta) || delta.ValueKind != JsonValueKind.Object)
                 return (null, finishReason);
-            if (!delta.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.String)
-                return (null, finishReason);
+            if (!delta.TryGetProperty("content", out var content)) return (null, finishReason);
 
-            return (content.GetString(), finishReason);
+            return (ReadContentValue(content), finishReason);
         }
         catch (Exception ex) when (ex is JsonException or InvalidOperationException)
         {
@@ -570,12 +758,34 @@ public sealed class OpenAiCompatibleTranslator : ITranslator, IModelCatalog
                 || messageElement.ValueKind != JsonValueKind.Object) return null;
             if (!messageElement.TryGetProperty("content", out var content)) return null;
 
-            return content.ValueKind == JsonValueKind.String ? content.GetString() : null;
+            return ReadContentValue(content);
         }
         catch (Exception ex) when (ex is JsonException or InvalidOperationException)
         {
             return null;
         }
+    }
+
+    /// <summary>
+    /// Reads a message's "content", which is a plain string on every text service but can
+    /// be a list of typed parts on a vision one. Returning null for the list form would
+    /// show "服务返回了看不懂的内容" for a reply that is perfectly fine.
+    /// </summary>
+    private static string? ReadContentValue(JsonElement content)
+    {
+        if (content.ValueKind == JsonValueKind.String) return content.GetString();
+        if (content.ValueKind != JsonValueKind.Array) return null;
+
+        var sb = new StringBuilder();
+        foreach (var part in content.EnumerateArray())
+        {
+            if (part.ValueKind == JsonValueKind.String) { sb.Append(part.GetString()); continue; }
+            if (part.ValueKind != JsonValueKind.Object) continue;
+            if (part.TryGetProperty("text", out var text) && text.ValueKind == JsonValueKind.String)
+                sb.Append(text.GetString());
+        }
+
+        return sb.Length == 0 ? null : sb.ToString();
     }
 
     private static string? ExtractErrorMessage(string body)

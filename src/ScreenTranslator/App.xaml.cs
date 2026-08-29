@@ -27,11 +27,19 @@ public partial class App : Application
     private SingleInstanceGuard? _guard;
     private TrayIconHost? _tray;
     private GlobalHotkey? _hotkey;
+    private GlobalHotkey? _overlayHotkey;
     private SettingsWindow? _settings;
     private CaptureService? _capture;
     private ResultWindow? _result;
     private HistoryWindow? _history;
     private readonly IOcrProvider _ocr = new WindowsOcrProvider();
+
+    /// <summary>
+    /// Phase 6's whole-screen snapshot. Given its own recognizer instance rather than a
+    /// cast of <see cref="_ocr"/>: the provider is stateless, and this keeps the popup
+    /// path free of any dependency on the layout interface.
+    /// </summary>
+    private readonly Overlay.SnapshotService _snapshot = new(new WindowsOcrProvider());
 
     /// <summary>
     /// Popups the user asked to keep. They outlive the capture that created them, which is
@@ -40,6 +48,7 @@ public partial class App : Application
     private readonly List<ResultWindow> _pinnedWindows = new();
 
     private string? _hotkeyProblem;
+    private string? _overlayHotkeyProblem;
 
     public static AppConfig Config { get; private set; } = new();
 
@@ -68,6 +77,28 @@ public partial class App : Application
             return;
         }
 
+        if (e.Args.Length > 0 && string.Equals(e.Args[0], "--testvision", StringComparison.OrdinalIgnoreCase))
+        {
+            var rest = e.Args.Skip(1).ToArray();
+            _ = VisionSelfTest.RunAsync(rest).ContinueWith(task =>
+                Dispatcher.Invoke(() => Shutdown(task.IsFaulted ? 3 : task.Result)));
+            return;
+        }
+
+        if (e.Args.Length > 0 && string.Equals(e.Args[0], "--testclipboard", StringComparison.OrdinalIgnoreCase))
+        {
+            Shutdown(ClipboardSelfTest.Run(e.Args.Skip(1).ToArray()));
+            return;
+        }
+
+        if (e.Args.Length > 0 && string.Equals(e.Args[0], "--testsnapshot", StringComparison.OrdinalIgnoreCase))
+        {
+            var rest = e.Args.Skip(1).ToArray();
+            _ = Overlay.SnapshotSelfTest.RunAsync(rest).ContinueWith(task =>
+                Dispatcher.Invoke(() => Shutdown(task.IsFaulted ? 3 : task.Result)));
+            return;
+        }
+
         _guard = new SingleInstanceGuard();
         if (!_guard.TryAcquire())
         {
@@ -82,6 +113,7 @@ public partial class App : Application
         _guard.StartServer();
 
         Config = ConfigStore.Load(out var configIsNew);
+        Paths.MigrateLegacyCropFolder();
         EnsureOcrCandidates(Config, configIsNew);
         AutoStart.Sync(Config.AutoStart);
 
@@ -89,6 +121,7 @@ public partial class App : Application
 
         _tray = new TrayIconHost();
         _tray.CaptureRequested += () => StartCapture(fromTray: true);
+        _tray.SnapshotRequested += () => StartSnapshot(fromTray: true);
         _tray.SettingsRequested += ShowSettings;
         _tray.AutoStartToggled += OnAutoStartToggled;
         _tray.HistoryProvider = () => HistoryStore.All();
@@ -100,14 +133,28 @@ public partial class App : Application
 
         _hotkey = new GlobalHotkey();
         _hotkey.Pressed += () => StartCapture(fromTray: false);
+
+        // A second, independent registration rather than one hotkey with two meanings:
+        // each has its own hidden sink window, so one being refused (already taken by
+        // another program) leaves the other working.
+        _overlayHotkey = new GlobalHotkey();
+        _overlayHotkey.Pressed += () => StartSnapshot(fromTray: false);
+
         RegisterStartupHotkey();
+        RegisterOverlayHotkey();
 
         LogOcrAvailability();
 
         // Recorded for the same reason as the OCR line above: "my history is gone" is
         // otherwise indistinguishable from "the switch is off" and from "the file failed
         // to parse", and this one line separates all three.
-        Log.Info($"翻译历史：{HistoryStore.Count} 条，记录开关 {(Config.KeepHistory ? "开" : "关")}");
+        Log.Info($"翻译历史：{HistoryStore.Count} 条，记录开关 识文={(Config.OpenAi.KeepHistory ? "开" : "关")}"
+                 + $"／看图={(Config.Vision.KeepHistory ? "开" : "关")}");
+
+        Log.Info(Pipelines.IsVision(Config.Pipeline)
+            ? $"框选翻译走：看图翻译（{Config.Vision.Model}）"
+            : $"框选翻译走：识文翻译（{Config.OpenAi.Model}）");
+        Log.Info($"全屏翻译用：{Config.Snapshot.Model}");
 
         Log.Info("启动完成");
     }
@@ -199,6 +246,37 @@ public partial class App : Application
         }
     }
 
+    /// <summary>
+    /// Registers the snapshot hotkey, or leaves it unregistered when the field is blank.
+    /// Unlike the capture hotkey, failing here is not worth a balloon: the tray menu item
+    /// still runs the feature, so nothing is actually unreachable.
+    /// </summary>
+    private void RegisterOverlayHotkey()
+    {
+        _overlayHotkey?.Unregister();
+        _overlayHotkeyProblem = null;
+        _tray?.SetSnapshotHotkeyHint(null);
+
+        if (string.IsNullOrWhiteSpace(Config.OverlayHotkey)) return;
+        if (!HotkeySpec.TryParse(Config.OverlayHotkey, out var spec) || !spec.IsUsable)
+        {
+            _overlayHotkeyProblem = $"整屏翻译快捷键「{Config.OverlayHotkey}」无效，已忽略。";
+            Log.Warn(_overlayHotkeyProblem);
+            return;
+        }
+
+        try
+        {
+            _overlayHotkey!.Register(spec);
+            _tray?.SetSnapshotHotkeyHint(spec.ToString());
+        }
+        catch (HotkeyRegistrationException ex)
+        {
+            _overlayHotkeyProblem = ex.Message;
+            Log.Warn($"整屏翻译快捷键注册失败：{ex.Message}");
+        }
+    }
+
     // ----------------------------------------------------------------- actions
 
     private async void StartCapture(bool fromTray)
@@ -225,8 +303,11 @@ public partial class App : Application
             SetPinnedVisible(false);
             try
             {
+                // Which route is active decides where its crop is filed and whether it is
+                // filed at all — the two routes keep separate folders.
+                var route = Config.ActiveRoute;
                 outcome = await _capture.CaptureAsync(
-                    Config.SaveCaptures, Paths.ResolveCaptureDir(Config.CaptureDirectory));
+                    route.SaveCaptures, Paths.ResolveCropDir(route.CaptureDirectory));
             }
             finally
             {
@@ -254,6 +335,42 @@ public partial class App : Application
         }
     }
 
+    /// <summary>
+    /// Phase 6: freeze the screen, translate everything on it, and draw the results back
+    /// over the words they came from.
+    ///
+    /// Deliberately a separate entry point from <see cref="StartCapture"/>. The framing
+    /// flow the user already verified is untouched — this neither shares its hotkey nor
+    /// its popup, and switching it on changes nothing about how the old one behaves.
+    /// </summary>
+    private async void StartSnapshot(bool fromTray)
+    {
+        try
+        {
+            if (_snapshot.IsBusy) return;
+
+            // Same reason as the framing flow: these are topmost windows, so leaving them
+            // up photographs them into the frozen desktop and floats them over the result.
+            CloseResultWindow();
+            if (fromTray) await Task.Delay(150);
+
+            SetPinnedVisible(false);
+            try
+            {
+                await _snapshot.RunAsync(Config);
+            }
+            finally
+            {
+                SetPinnedVisible(true);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error("整屏翻译流程出错", ex);
+            _tray?.Notify("出错了", $"{ex.Message}（详情见日志）", ToolTipIcon.Error, 8000);
+        }
+    }
+
     private void OnCaptureSucceeded(CaptureOutcome outcome)
     {
         var image = outcome.TakeImage();
@@ -265,8 +382,9 @@ public partial class App : Application
 
         CloseResultWindow();
 
-        var window = new ResultWindow(image, outcome.ScreenRect, PopupThemes.Find(Config.PopupTheme));
-        window.RetryHandler = () => RunRecognitionAsync(window);
+        var window = new ResultWindow(
+            image, outcome.ScreenRect, PopupThemes.Find(Config.ActiveRoute.PopupTheme));
+        window.RetryHandler = () => RunPipelineAsync(window);
         window.ObstaclesProvider = () => PinnedRectsExcept(window);
         window.Closed += (_, _) =>
         {
@@ -278,8 +396,16 @@ public partial class App : Application
         window.SetRecognizing();
         window.ShowNoActivate();
 
-        _ = RunRecognitionAsync(window);
+        _ = RunPipelineAsync(window);
     }
+
+    /// <summary>
+    /// Picks the route for this capture. Read from the config every time rather than
+    /// cached, so switching in the settings window takes effect on the very next capture
+    /// with no restart.
+    /// </summary>
+    private Task RunPipelineAsync(ResultWindow window) =>
+        Pipelines.IsVision(Config.Pipeline) ? RunVisionAsync(window) : RunRecognitionAsync(window);
 
     /// <summary>
     /// A new capture supersedes the current popup — unless the user pinned it, which is
@@ -374,7 +500,7 @@ public partial class App : Application
 
         // Progress captures this (UI) thread's synchronization context, so the translator
         // can report from wherever it likes and the popup still updates safely.
-        IProgress<string>? progress = Config.StreamTranslation
+        IProgress<string>? progress = Config.OpenAi.StreamTranslation
             ? new Progress<string>(window.ShowPartialTranslation)
             : null;
 
@@ -386,15 +512,107 @@ public partial class App : Application
         RememberTranslation(ocr, result);
     }
 
+    /// <summary>
+    /// The picture goes straight to a model that can read it — no OCR, no language
+    /// guessing, and mixed scripts in one image all get translated instead of only
+    /// whichever one the scorer picked.
+    /// </summary>
+    private async Task RunVisionAsync(ResultWindow window)
+    {
+        try
+        {
+            window.SetVisionTranslating();
+
+            // Re-translating re-sends the same picture. That is the whole request in this
+            // route, so unlike the OCR one there is nothing cheaper to reuse.
+            window.RetranslateHandler = () => RunVisionAsync(window);
+
+            var translator = CreateVisionTranslator();
+            if (!translator.IsConfigured)
+            {
+                window.SetTranslationResult(TranslationOutcome.Error(
+                    TranslationStatus.NotConfigured,
+                    "「看图直翻」还没配置好。右键托盘图标 → 设置 → 看图直翻，"
+                    + "填上接口地址、API Key 和模型名，或者在那里切回「先识别文字再翻译」。"));
+                return;
+            }
+
+            var wantOriginal = Config.Vision.IncludeOriginal;
+
+            var request = new TranslationRequest("", "", Config.TargetLanguage, Config.Vision.ExtraPrompt)
+            {
+                Image = window.Image,
+                WantOriginal = wantOriginal,
+            };
+
+            // The reply carries the transcription after a marker, so the streamed text has
+            // to be cut at the marker before it reaches the popup — otherwise the original
+            // scrolls past as if it were part of the translation.
+            IProgress<string>? progress = Config.Vision.StreamTranslation
+                ? new Progress<string>(partial =>
+                    window.ShowPartialTranslation(
+                        wantOriginal ? VisionReply.TranslationSoFar(partial) : partial))
+                : null;
+
+            var result = await translator.TranslateAsync(request, progress, window.Lifetime);
+
+            if (window.Lifetime.IsCancellationRequested) return;
+
+            var original = "";
+            if (wantOriginal && result.IsSuccess)
+            {
+                string translation;
+                (translation, original) = VisionReply.Split(result.Text);
+                result = result.WithText(translation);
+            }
+
+            window.SetLateOriginal(original);
+            window.SetTranslationResult(result);
+
+            RememberVisionTranslation(result, original);
+        }
+        catch (OperationCanceledException)
+        {
+            // The popup was closed; nothing to report.
+        }
+        catch (Exception ex)
+        {
+            Log.Error("看图直翻出错", ex);
+            if (!window.Lifetime.IsCancellationRequested)
+            {
+                window.SetTranslationResult(TranslationOutcome.Error(
+                    TranslationStatus.Failed, $"{ex.Message}（详情见日志）", ex.ToString()));
+            }
+        }
+    }
+
     private static void RememberTranslation(OcrOutcome ocr, TranslationOutcome result)
     {
-        if (!Config.KeepHistory) return;
+        if (!Config.OpenAi.KeepHistory) return;
         if (!result.IsSuccess || string.IsNullOrWhiteSpace(result.Text)) return;
 
         HistoryStore.Add(new TranslationRecord
         {
             SourceLanguage = OcrLanguages.DisplayFor(ocr.LanguageTag),
             Original = ocr.Text,
+            Translation = result.Text,
+        });
+    }
+
+    /// <summary>
+    /// The original is whatever the model transcribed, or empty when that was switched off.
+    /// The label goes in either way so the history window can tell at a glance which route
+    /// produced an entry.
+    /// </summary>
+    private static void RememberVisionTranslation(TranslationOutcome result, string original)
+    {
+        if (!Config.Vision.KeepHistory) return;
+        if (!result.IsSuccess || string.IsNullOrWhiteSpace(result.Text)) return;
+
+        HistoryStore.Add(new TranslationRecord
+        {
+            SourceLanguage = "看图",
+            Original = original,
             Translation = result.Text,
         });
     }
@@ -408,16 +626,11 @@ public partial class App : Application
     private void OnHistoryEntryChosen(TranslationRecord record)
     {
         var text = string.IsNullOrWhiteSpace(record.Translation) ? record.Original : record.Translation;
-        try
-        {
-            System.Windows.Clipboard.SetText(text);
+
+        if (ClipboardHelper.TrySetText(text))
             _tray?.Notify("已复制", record.Summary(60));
-        }
-        catch (Exception ex)
-        {
-            Log.Warn($"从托盘复制历史失败：{ex.Message}");
+        else
             _tray?.Notify("复制失败", "剪贴板被别的程序占着，过一秒再试。", ToolTipIcon.Warning);
-        }
     }
 
     private void ShowHistory()
@@ -440,7 +653,11 @@ public partial class App : Application
     /// capture, with no restart and no stale key cached anywhere.
     /// </summary>
     public static ITranslator CreateTranslator() =>
-        new OpenAiCompatibleTranslator(Config.OpenAi, Config.RequestTimeoutSeconds);
+        new OpenAiCompatibleTranslator(Config.OpenAi, vision: false);
+
+    /// <summary>Same contract as <see cref="CreateTranslator"/>, for 看图翻译.</summary>
+    public static ITranslator CreateVisionTranslator() =>
+        new OpenAiCompatibleTranslator(Config.Vision, vision: true);
 
     private void OnAutoStartToggled(bool enabled)
     {
@@ -511,6 +728,13 @@ public partial class App : Application
         {
             _settings.SetHotkeyStatus($"快捷键 {_hotkey?.Current} 已生效。", ok: true);
         }
+
+        if (_overlayHotkeyProblem is not null)
+            _settings.SetSnapshotHotkeyStatus(_overlayHotkeyProblem, ok: false);
+        else if (_overlayHotkey?.Current is { } snapshot)
+            _settings.SetSnapshotHotkeyStatus($"快捷键 {snapshot} 已生效。", ok: true);
+        else
+            _settings.SetSnapshotHotkeyStatus("整屏翻译快捷键已关闭，托盘菜单里仍然可以用。", ok: true);
     }
 
     /// <summary>
@@ -553,6 +777,12 @@ public partial class App : Application
         }
 
         Config = updated;
+
+        // After Config is swapped in, because it reads the new value from there. A failure
+        // is reported through the settings window's own status line, not by refusing the
+        // save: everything else the user just edited has already been written.
+        RegisterOverlayHotkey();
+
         _tray?.SetHotkeyHint(spec.ToString());
         _tray?.SetAutoStartChecked(updated.AutoStart);
         PushHotkeyStatus();
@@ -589,6 +819,7 @@ public partial class App : Application
     {
         Log.Info($"退出，代码 {e.ApplicationExitCode}");
         _hotkey?.Dispose();
+        _overlayHotkey?.Dispose();
         _tray?.Dispose();
         _guard?.Dispose();
         base.OnExit(e);

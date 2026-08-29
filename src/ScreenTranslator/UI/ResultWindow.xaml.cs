@@ -57,6 +57,14 @@ public partial class ResultWindow : Window
     private bool _settled;
     private bool _repositionQueued;
 
+    /// <summary>
+    /// Whether there is a separate original to show. True for the OCR route, which always
+    /// has recognized text; false for the vision route, where the model read the picture
+    /// itself and there is nothing to compare against. Without this the popup would offer
+    /// "显示原文" and then reveal an empty box.
+    /// </summary>
+    private bool _hasOriginal = true;
+
     private readonly CancellationTokenSource _lifetime = new();
 
     /// <summary>
@@ -281,6 +289,7 @@ public partial class ResultWindow : Window
     {
         HideAllButtons();
         _settled = true;
+        _hasOriginal = true;
         _missingLanguages = outcome.MissingLanguages;
         _originalText = outcome.Text;
         _translationText = "";
@@ -331,6 +340,7 @@ public partial class ResultWindow : Window
     public void SetTranslating(OcrOutcome ocr)
     {
         HideAllButtons();
+        _hasOriginal = true;
         _originalText = ocr.Text;
         _translationText = "";
         _streaming = false;
@@ -347,6 +357,42 @@ public partial class ResultWindow : Window
         OriginalButton.Visibility = Visibility.Visible;
         CopyOriginalButton.Visibility = Visibility.Visible;
         UpdateActionPanel();
+    }
+
+    /// <summary>
+    /// The picture went straight to a model that can read it, so there is no OCR step and
+    /// no separate original — the source label says so, and the "显示原文" pair stays away.
+    /// </summary>
+    public void SetVisionTranslating()
+    {
+        HideAllButtons();
+        _hasOriginal = false;
+        _originalText = "";
+        _translationText = "";
+        _streaming = false;
+        _settled = false;
+
+        _sourceLabel = "看图";
+        StatusText.Text = "看图直翻　·　正在读图并翻译…";
+        BodyText.Text = "…";
+        BodyText.Foreground = (Brush)FindResource("Muted");
+
+        OriginalText.Text = "";
+        OriginalBlock.Visibility = Visibility.Collapsed;
+        UpdateActionPanel();
+    }
+
+    /// <summary>
+    /// Hands the popup an original after the fact, which is how 看图翻译 gets one: there is
+    /// no OCR step there, so the text only exists once the model has finished answering.
+    /// Call before <see cref="SetTranslationResult"/>, which is what reveals the buttons.
+    /// </summary>
+    public void SetLateOriginal(string original)
+    {
+        _hasOriginal = !string.IsNullOrWhiteSpace(original);
+        _originalText = original;
+        OriginalText.Text = original;
+        if (!_hasOriginal) OriginalBlock.Visibility = Visibility.Collapsed;
     }
 
     /// <summary>
@@ -379,8 +425,11 @@ public partial class ResultWindow : Window
         HideAllButtons();
         _streaming = false;
         _settled = true;
-        OriginalButton.Visibility = Visibility.Visible;
-        CopyOriginalButton.Visibility = Visibility.Visible;
+        if (_hasOriginal)
+        {
+            OriginalButton.Visibility = Visibility.Visible;
+            CopyOriginalButton.Visibility = Visibility.Visible;
+        }
         RetranslateButton.Visibility = Visibility.Visible;
 
         if (outcome.IsSuccess)
@@ -403,7 +452,7 @@ public partial class ResultWindow : Window
             BodyText.Foreground = (Brush)FindResource("Warn");
             if (outcome.Status == TranslationStatus.NotConfigured)
                 RetranslateButton.Visibility = Visibility.Collapsed;
-            ShowOriginal(true);
+            if (_hasOriginal) ShowOriginal(true);
         }
 
         UpdateActionPanel();
@@ -796,27 +845,7 @@ public partial class ResultWindow : Window
         }
     }
 
-    private static bool TrySetClipboard(string text)
-    {
-        if (string.IsNullOrEmpty(text)) return false;
-
-        // The clipboard is a shared, single-owner resource; another app holding it open
-        // makes this throw, and retrying a moment later almost always succeeds.
-        for (var attempt = 0; attempt < 3; attempt++)
-        {
-            try
-            {
-                Clipboard.SetText(text);
-                return true;
-            }
-            catch (Exception ex)
-            {
-                Log.Warn($"写剪贴板失败（第 {attempt + 1} 次）：{ex.Message}");
-                System.Threading.Thread.Sleep(60);
-            }
-        }
-        return false;
-    }
+    private static bool TrySetClipboard(string text) => ClipboardHelper.TrySetText(text);
 
     // --------------------------------------------------------------- lifetime
 
