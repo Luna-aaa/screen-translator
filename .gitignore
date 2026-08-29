@@ -16,9 +16,14 @@ dist/
 # config.json holds the encrypted key; history.json holds whatever was on screen.
 # Both actually live in %APPDATA%, so this is a second line of defence, not the first.
 config.json
+config.json.bak
 history.json
 selftest.txt
 testkey.txt
+testvision.txt
+testsnapshot.txt
+testsnapshot*.png
+testclipboard.txt
 *.log
 
 # The generated icon is a build input and IS committed on purpose
